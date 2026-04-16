@@ -3,7 +3,7 @@ import zipfile
 
 import matplotlib.pyplot as plt
 import numpy as np
-import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 from PIL import Image
 
@@ -14,7 +14,7 @@ st.title("Cumulative reconstructed dose map")
 st.write(
     "Upload OpenREM PNG dose maps, enter the displayed maximum dose for each session, "
     "build the cumulative reconstructed map, then draw one inclusion ROI with the mouse "
-    "using Plotly box select."
+    "using box select on the cumulative map."
 )
 
 st.warning(
@@ -46,30 +46,44 @@ def render_matplotlib_map(dose_map, title, vmax=None):
     return fig
 
 
-def render_interactive_map(dose_map, title, vmax=None, inclusion_roi=None, peak_xy=None):
+def build_selectable_grid(width, height, step=4):
+    xs = np.arange(0, width, step, dtype=int)
+    ys = np.arange(0, height, step, dtype=int)
+    xx, yy = np.meshgrid(xs, ys)
+    return xx.ravel(), yy.ravel()
+
+
+def render_interactive_map(dose_map, title, vmax=None, inclusion_roi=None, peak_xy=None, selectable=True):
     use_vmax = vmax if vmax is not None and vmax > 0 else max(float(np.max(dose_map)), 1e-6)
+    h, w = dose_map.shape
 
-    fig = px.imshow(
-        dose_map,
-        color_continuous_scale="Jet",
-        zmin=0,
-        zmax=use_vmax,
-        aspect="equal",
-        origin="upper",
-        labels={"x": "X", "y": "Y", "color": "Dose (Gy)"},
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Heatmap(
+            z=dose_map,
+            colorscale="Jet",
+            zmin=0,
+            zmax=use_vmax,
+            colorbar=dict(title="Dose (Gy)"),
+            hovertemplate="X: %{x}<br>Y: %{y}<br>Dose: %{z:.3f} Gy<extra></extra>",
+        )
     )
 
-    fig.update_traces(
-        hovertemplate="X: %{x}<br>Y: %{y}<br>Dose: %{z:.3f} Gy<extra></extra>"
-    )
-
-    fig.update_layout(
-        title=title,
-        margin=dict(l=10, r=10, t=40, b=10),
-        xaxis_title="X",
-        yaxis_title="Y",
-        dragmode="select",  # start in box-select mode
-    )
+    if selectable:
+        gx, gy = build_selectable_grid(w, h, step=4)
+        fig.add_trace(
+            go.Scatter(
+                x=gx,
+                y=gy,
+                mode="markers",
+                marker=dict(size=6, color="rgba(0,0,0,0)"),
+                hoverinfo="skip",
+                showlegend=False,
+                selected=dict(marker=dict(opacity=0)),
+                unselected=dict(marker=dict(opacity=0)),
+            )
+        )
 
     if inclusion_roi is not None:
         x1, y1, x2, y2 = inclusion_roi
@@ -91,16 +105,29 @@ def render_interactive_map(dose_map, title, vmax=None, inclusion_roi=None, peak_
         )
 
     if peak_xy is not None:
-        fig.add_scatter(
-            x=[peak_xy[0]],
-            y=[peak_xy[1]],
-            mode="markers+text",
-            text=["Peak"],
-            textposition="top center",
-            marker=dict(size=10, symbol="x", color="white"),
-            name="Peak",
-            hovertemplate="Peak X: %{x}<br>Peak Y: %{y}<extra></extra>"
+        fig.add_trace(
+            go.Scatter(
+                x=[peak_xy[0]],
+                y=[peak_xy[1]],
+                mode="markers+text",
+                text=["Peak"],
+                textposition="top center",
+                marker=dict(size=10, symbol="x", color="white"),
+                name="Peak",
+                hovertemplate="Peak X: %{x}<br>Peak Y: %{y}<extra></extra>",
+                showlegend=False,
+            )
         )
+
+    fig.update_layout(
+        title=title,
+        margin=dict(l=10, r=10, t=40, b=10),
+        xaxis_title="X",
+        yaxis_title="Y",
+        dragmode="select",
+    )
+
+    fig.update_yaxes(autorange="reversed", scaleanchor="x", scaleratio=1)
 
     return fig
 
@@ -252,7 +279,7 @@ def build_csv_bytes(session_rows, roi_stats):
 
 
 def roi_from_selection(selection_state, width, height):
-    if not selection_state:
+    if selection_state is None:
         return None
 
     sel = selection_state.get("selection", selection_state)
@@ -268,16 +295,16 @@ def roi_from_selection(selection_state, width, height):
         y = p.get("y")
         if x is None or y is None:
             continue
-        xs.append(int(round(x)))
-        ys.append(int(round(y)))
+        xs.append(float(x))
+        ys.append(float(y))
 
     if not xs or not ys:
         return None
 
-    x1 = min(xs)
-    x2 = max(xs) + 1
-    y1 = min(ys)
-    y2 = max(ys) + 1
+    x1 = int(np.floor(min(xs)))
+    x2 = int(np.ceil(max(xs))) + 1
+    y1 = int(np.floor(min(ys)))
+    y2 = int(np.ceil(max(ys))) + 1
     return clamp_roi((x1, y1, x2, y2), width, height)
 
 
@@ -376,7 +403,7 @@ if uploaded_files:
         show_histogram = False
         show_downloads = True
 
-    build_clicked = st.button("Build cumulative map", type="primary")
+    build_clicked = st.button("Build cumulative map", type="primary", width="stretch")
 
     current_signature = {
         "files": tuple((i, f.name, len(f.getvalue())) for i, f in enumerate(uploaded_files)),
@@ -470,7 +497,7 @@ if uploaded_files:
         session_rows = st.session_state.session_rows
 
         st.subheader("Inclusion ROI")
-        st.caption("Use the box select tool on the cumulative map to draw the inclusion ROI. Double-click or press reset if you want to clear and redraw.")
+        st.caption("Use box select on the cumulative map. The ROI stats and previews appear after a selection.")
 
         map_h, map_w = cumulative_dose.shape
 
@@ -485,11 +512,12 @@ if uploaded_files:
             vmax=max(float(np.max(cumulative_dose)), 1.0),
             inclusion_roi=st.session_state.inclusion_roi,
             peak_xy=current_peak,
+            selectable=True,
         )
 
         selection_event = st.plotly_chart(
             selector_fig,
-            use_container_width=True,
+            width="stretch",
             on_select="rerun",
             config={
                 "modeBarButtonsToRemove": [
@@ -507,12 +535,18 @@ if uploaded_files:
         if new_roi is not None:
             st.session_state.inclusion_roi = new_roi
 
-        if st.button("Clear inclusion ROI"):
-            st.session_state.inclusion_roi = None
-            st.rerun()
+        cols = st.columns([1, 1, 2])
+        with cols[0]:
+            if st.button("Clear inclusion ROI", width="stretch"):
+                st.session_state.inclusion_roi = None
+                st.rerun()
+        with cols[1]:
+            if st.button("Use full map as ROI", width="stretch"):
+                st.session_state.inclusion_roi = (0, 0, map_w, map_h)
+                st.rerun()
 
         if st.session_state.inclusion_roi is None:
-            st.info("Draw a box on the cumulative map to create the inclusion ROI.")
+            st.info("No ROI selected yet. Draw a rectangle on the map with box select.")
         else:
             inclusion_roi = st.session_state.inclusion_roi
             roi_stats = compute_stats(cumulative_dose, roi=inclusion_roi)
@@ -527,10 +561,11 @@ if uploaded_files:
                     vmax=max(float(np.max(cumulative_dose)), 1.0),
                     inclusion_roi=inclusion_roi,
                     peak_xy=(roi_stats["peak_x"], roi_stats["peak_y"]),
+                    selectable=False,
                 )
                 st.plotly_chart(
                     result_fig,
-                    use_container_width=True,
+                    width="stretch",
                     config={"displaylogo": False},
                     key="roi_result_chart",
                 )
@@ -561,15 +596,18 @@ if uploaded_files:
                         st.markdown(f"**{name}**")
                         st.caption(f"Crop box: {bbox}")
                         session_display = masked_to_inclusion_roi(dose_map, inclusion_roi)
+                        session_stats = compute_stats(dose_map, inclusion_roi)
                         session_fig = render_interactive_map(
                             session_display,
-                            title=f"{name} | ROI peak {compute_stats(dose_map, inclusion_roi)['peak_dose']:.3f} Gy",
+                            title=f"{name} | ROI peak {session_stats['peak_dose']:.3f} Gy",
                             vmax=max(float(np.max(cumulative_dose)), 1.0),
                             inclusion_roi=inclusion_roi,
+                            peak_xy=(session_stats["peak_x"], session_stats["peak_y"]),
+                            selectable=False,
                         )
                         st.plotly_chart(
                             session_fig,
-                            use_container_width=True,
+                            width="stretch",
                             config={"displaylogo": False},
                             key=f"session_chart_{i}",
                         )
@@ -583,7 +621,7 @@ if uploaded_files:
                     ax_hist.set_xlabel("Dose (Gy)")
                     ax_hist.set_ylabel("Pixel count")
                     ax_hist.set_title("Histogram of non-zero dose values inside ROI")
-                    st.pyplot(fig_hist)
+                    st.pyplot(fig_hist, width="stretch")
                     plt.close(fig_hist)
                 else:
                     st.info("No non-zero pixels inside the ROI.")
@@ -619,6 +657,7 @@ if uploaded_files:
                         data=npy_buf.getvalue(),
                         file_name="cumulative_reconstructed_dose.npy",
                         mime="application/octet-stream",
+                        width="stretch",
                     )
                 with d2:
                     st.download_button(
@@ -626,6 +665,7 @@ if uploaded_files:
                         data=zip_buf.getvalue(),
                         file_name="reconstructed_dose_results.zip",
                         mime="application/zip",
+                        width="stretch",
                     )
 
 else:
