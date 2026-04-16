@@ -450,8 +450,7 @@ if uploaded_files:
             csv_lines.append(f"pixels_ge_2gy,{thr2}")
             csv_lines.append(f"pixels_ge_5gy,{thr5}")
             csv_lines.append(f"pixels_ge_10gy,{thr10}")
-            csv_bytes = "
-".join(csv_lines).encode("utf-8")
+            csv_bytes = ".join(csv_lines).encode("utf-8")"
 
             npy_buf = io.BytesIO()
             np.save(npy_buf, cumulative_dose)
