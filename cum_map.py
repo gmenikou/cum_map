@@ -8,36 +8,24 @@ import streamlit as st
 from PIL import Image
 
 
-st.set_page_config(page_title="Cumulative Dose Map GUI", layout="wide")
-st.title("Cumulative Dose Map GUI")
+st.set_page_config(page_title="Cumulative Dose Map", layout="wide")
+st.title("Cumulative reconstructed dose map")
 
 st.write(
-    "Upload OpenREM skin dose map PNG images. For each image, enter the displayed maximum dose from the grayscale scale. "
-    "The app crops the dose-map panel, converts grayscale display values back into approximate dose values, "
-    "shows each reconstructed map in colour with a Gy colourbar, and builds a cumulative map."
+    "Upload OpenREM PNG dose maps, enter the displayed maximum dose for each session, "
+    "build the cumulative reconstructed map, and use one inclusion ROI on the reconstructed map "
+    "for clean statistics and peak analysis."
 )
 
 st.warning(
-    "This reconstructs dose from the displayed 2D grayscale map, not from raw openSkin/OpenREM numeric data. "
-    "Use for visualisation, QA, and exploratory review. Do not treat it as validated clinical dosimetry."
+    "This reconstructs dose from the displayed grayscale map, not from raw OpenREM/openSkin numeric data. "
+    "Use for visualisation, QA, and exploratory analysis."
 )
 
 
-# -----------------------------
+# =========================================================
 # Helpers
-# -----------------------------
-def render_dose_figure(dose_map, title, vmax=None):
-    fig, ax = plt.subplots(figsize=(6, 5))
-    use_vmax = vmax if vmax is not None and vmax > 0 else max(float(np.max(dose_map)), 1e-6)
-    im = ax.imshow(dose_map, cmap="jet", vmin=0, vmax=use_vmax)
-    ax.set_title(title)
-    ax.axis("off")
-    cbar = plt.colorbar(im, ax=ax)
-    cbar.set_label("Dose (Gy)")
-    fig.tight_layout()
-    return fig
-
-
+# =========================================================
 def fig_to_png_bytes(fig):
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=200, bbox_inches="tight")
@@ -45,7 +33,20 @@ def fig_to_png_bytes(fig):
     return buf.getvalue()
 
 
-def render_interactive_dose_map(dose_map, title, vmax=None, roi_used=None, roi_list=None, peak_xy=None):
+def render_matplotlib_map(dose_map, title, vmax=None):
+    fig, ax = plt.subplots(figsize=(7, 5))
+    use_vmax = vmax if vmax is not None and vmax > 0 else max(float(np.max(dose_map)), 1e-6)
+    im = ax.imshow(dose_map, cmap="jet", vmin=0, vmax=use_vmax)
+    ax.set_title(title)
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label("Dose (Gy)")
+    fig.tight_layout()
+    return fig
+
+
+def render_interactive_map(dose_map, title, vmax=None, inclusion_roi=None, peak_xy=None):
     use_vmax = vmax if vmax is not None and vmax > 0 else max(float(np.max(dose_map)), 1e-6)
 
     fig = px.imshow(
@@ -69,52 +70,24 @@ def render_interactive_dose_map(dose_map, title, vmax=None, roi_used=None, roi_l
         yaxis_title="Y",
     )
 
-    if roi_used is not None:
+    if inclusion_roi is not None:
+        x1, y1, x2, y2 = inclusion_roi
         fig.add_shape(
             type="rect",
-            x0=roi_used[0], y0=roi_used[1], x1=roi_used[2], y1=roi_used[3],
+            x0=x1, y0=y1, x1=x2, y1=y2,
             line=dict(color="white", width=2),
             fillcolor="rgba(0,0,0,0)"
         )
         fig.add_annotation(
-            x=roi_used[0],
-            y=roi_used[1],
-            text=f"ROI {roi_used[2]-roi_used[0]}×{roi_used[3]-roi_used[1]} px",
+            x=x1,
+            y=y1,
+            text=f"ROI {x2-x1}×{y2-y1} px",
             showarrow=False,
             xanchor="left",
             yanchor="bottom",
             font=dict(color="white"),
             bgcolor="rgba(0,0,0,0.45)"
         )
-
-    if roi_list:
-        for i, item in enumerate(roi_list, start=1):
-            if isinstance(item, dict):
-                roi = item.get("roi")
-                label = item.get("label", f"R{i}")
-            else:
-                roi = item
-                label = f"R{i}"
-
-            if roi is None or len(roi) != 4:
-                continue
-
-            fig.add_shape(
-                type="rect",
-                x0=roi[0], y0=roi[1], x1=roi[2], y1=roi[3],
-                line=dict(color="cyan", width=1),
-                fillcolor="rgba(0,255,255,0.0)"
-            )
-            fig.add_annotation(
-                x=roi[0],
-                y=roi[1],
-                text=label,
-                showarrow=False,
-                xanchor="left",
-                yanchor="bottom",
-                font=dict(color="cyan"),
-                bgcolor="rgba(0,0,0,0.35)"
-            )
 
     if peak_xy is not None:
         fig.add_scatter(
@@ -201,17 +174,24 @@ def clamp_roi(roi, width, height):
     return (x1, y1, x2, y2)
 
 
-def roi_stats(cumulative_dose, roi=None):
-    h, w = cumulative_dose.shape
+def masked_to_inclusion_roi(arr, roi):
+    if roi is None:
+        return arr
+    x1, y1, x2, y2 = roi
+    out = np.zeros_like(arr)
+    out[y1:y2, x1:x2] = arr[y1:y2, x1:x2]
+    return out
 
-    if roi is not None:
-        roi = clamp_roi(roi, w, h)
-        x1, y1, x2, y2 = roi
-        stats_map = cumulative_dose[y1:y2, x1:x2]
-    else:
-        x1, y1, x2, y2 = 0, 0, w, h
-        stats_map = cumulative_dose
-        roi = None
+
+def compute_stats(dose_map, roi=None):
+    h, w = dose_map.shape
+
+    if roi is None:
+        roi = (0, 0, w, h)
+
+    roi = clamp_roi(roi, w, h)
+    x1, y1, x2, y2 = roi
+    stats_map = dose_map[y1:y2, x1:x2]
 
     if stats_map.size == 0:
         peak_val = 0.0
@@ -236,7 +216,7 @@ def roi_stats(cumulative_dose, roi=None):
 
     return {
         "roi": roi,
-        "peak_cumulative_dose": peak_val,
+        "peak_dose": peak_val,
         "peak_x": peak_x,
         "peak_y": peak_y,
         "mean_dose": mean_dose,
@@ -253,63 +233,42 @@ def roi_stats(cumulative_dose, roi=None):
     }
 
 
-def build_csv_bytes(session_records, overall_stats, multi_roi_stats):
+def build_csv_bytes(session_rows, global_stats, roi_stats):
     lines = []
-    lines.append("file,crop_box,cropped_shape,displayed_max_gy,reconstructed_peak_gy,nonzero_pixels")
-
-    for row in session_records:
+    lines.append("file,displayed_max_gy,crop_box,reconstructed_peak_gy,nonzero_pixels")
+    for row in session_rows:
         lines.append(
-            f"{row['file']},{row['crop_box']},{row['cropped_shape']},{row['displayed_max_gy']},{row['reconstructed_peak_gy']},{row['nonzero_pixels']}"
+            f"{row['file']},{row['displayed_max_gy']},{row['crop_box']},{row['reconstructed_peak_gy']},{row['nonzero_pixels']}"
         )
 
     lines.append("")
-    lines.append("cumulative_statistic,value")
-    lines.append(f"stats_roi,{overall_stats['roi'] if overall_stats['roi'] is not None else 'full_map'}")
-    lines.append(f"peak_cumulative_dose_gy,{overall_stats['peak_cumulative_dose']}")
-    lines.append(f"peak_location_x,{overall_stats['peak_x']}")
-    lines.append(f"peak_location_y,{overall_stats['peak_y']}")
-    lines.append(f"mean_dose_gy,{overall_stats['mean_dose']}")
-    lines.append(f"median_dose_gy,{overall_stats['median_dose']}")
-    lines.append(f"std_dose_gy,{overall_stats['std_dose']}")
-    lines.append(f"minimum_nonzero_dose_gy,{overall_stats['min_nonzero_dose']}")
-    lines.append(f"dose_p95_gy,{overall_stats['p95_dose']}")
-    lines.append(f"dose_sum,{overall_stats['dose_sum']}")
-    lines.append(f"nonzero_pixels,{overall_stats['nonzero_pixels']}")
-    lines.append(f"pixels_ge_2gy,{overall_stats['thr2']}")
-    lines.append(f"pixels_ge_5gy,{overall_stats['thr5']}")
-    lines.append(f"pixels_ge_10gy,{overall_stats['thr10']}")
-
-    if multi_roi_stats:
-        lines.append("")
-        lines.append(
-            "roi_label,roi,peak_cumulative_dose_gy,peak_x,peak_y,mean_dose_gy,median_dose_gy,std_dose_gy,min_nonzero_dose_gy,p95_dose_gy,dose_sum,nonzero_pixels,pixels_ge_2gy,pixels_ge_5gy,pixels_ge_10gy"
-        )
-        for label, stats in multi_roi_stats:
-            lines.append(
-                f"{label},{stats['roi']},{stats['peak_cumulative_dose']},{stats['peak_x']},{stats['peak_y']},{stats['mean_dose']},{stats['median_dose']},{stats['std_dose']},{stats['min_nonzero_dose']},{stats['p95_dose']},{stats['dose_sum']},{stats['nonzero_pixels']},{stats['thr2']},{stats['thr5']},{stats['thr10']}"
-            )
+    lines.append("summary,roi,peak_dose_gy,peak_x,peak_y,mean_dose_gy,median_dose_gy,std_dose_gy,min_nonzero_dose_gy,p95_dose_gy,dose_sum,nonzero_pixels,pixels_ge_2gy,pixels_ge_5gy,pixels_ge_10gy")
+    lines.append(
+        f"global,{global_stats['roi']},{global_stats['peak_dose']},{global_stats['peak_x']},{global_stats['peak_y']},{global_stats['mean_dose']},{global_stats['median_dose']},{global_stats['std_dose']},{global_stats['min_nonzero_dose']},{global_stats['p95_dose']},{global_stats['dose_sum']},{global_stats['nonzero_pixels']},{global_stats['thr2']},{global_stats['thr5']},{global_stats['thr10']}"
+    )
+    lines.append(
+        f"roi,{roi_stats['roi']},{roi_stats['peak_dose']},{roi_stats['peak_x']},{roi_stats['peak_y']},{roi_stats['mean_dose']},{roi_stats['median_dose']},{roi_stats['std_dose']},{roi_stats['min_nonzero_dose']},{roi_stats['p95_dose']},{roi_stats['dose_sum']},{roi_stats['nonzero_pixels']},{roi_stats['thr2']},{roi_stats['thr5']},{roi_stats['thr10']}"
+    )
 
     return "\n".join(lines).encode("utf-8")
 
 
-# -----------------------------
+# =========================================================
 # Session state
-# -----------------------------
-if "roi_list" not in st.session_state:
-    st.session_state.roi_list = []
-else:
-    cleaned = []
-    for item in st.session_state.roi_list:
-        if isinstance(item, dict) and "roi" in item:
-            cleaned.append({"label": item.get("label", f"ROI {len(cleaned)+1}"), "roi": tuple(item["roi"])})
-        elif isinstance(item, (list, tuple)) and len(item) == 4:
-            cleaned.append({"label": f"ROI {len(cleaned)+1}", "roi": tuple(item)})
-    st.session_state.roi_list = cleaned
+# =========================================================
+if "reconstruction_signature" not in st.session_state:
+    st.session_state.reconstruction_signature = None
+if "cumulative_dose" not in st.session_state:
+    st.session_state.cumulative_dose = None
+if "processed_maps" not in st.session_state:
+    st.session_state.processed_maps = None
+if "session_rows" not in st.session_state:
+    st.session_state.session_rows = None
 
 
-# -----------------------------
-# UI
-# -----------------------------
+# =========================================================
+# Main UI
+# =========================================================
 uploaded_files = st.file_uploader(
     "Upload OpenREM PNG images",
     type=["png"],
@@ -317,89 +276,105 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    st.subheader("Reconstruction settings")
-
-    stats_from_roi_only = st.checkbox(
-        "Calculate statistics only inside a manually selected analysis area",
-        value=True,
-        help="Use this to exclude annotations and calculate cumulative-map statistics only inside the real map area.",
-    )
-    st.caption("The analysis ROI is a free rectangle defined by independent X1, Y1, X2, Y2 coordinates. There is no fixed aspect ratio.")
-
-    crop_mode = st.selectbox(
-        "Map area selection",
-        ["Auto-detect map panel", "Use full image", "Manual crop for all images"],
-        index=0,
-    )
-
-    size_mode = st.selectbox(
-        "How should mismatched reconstructed sizes be handled?",
-        [
-            "Strict (all reconstructed maps must match exactly)",
-            "Crop to smallest common size",
-            "Pad to largest common size",
-        ],
-        index=1,
-    )
-
-    use_global_scale = st.checkbox("Use the same colour scale for all individual maps", value=True)
-    mask_threshold = st.slider("Background threshold", min_value=220, max_value=255, value=245, step=1)
-
-    sample_img = Image.open(uploaded_files[0]).convert("L")
-    sample_arr = np.array(sample_img)
-    H, W = sample_arr.shape
-
-    manual_vals = None
-    if crop_mode == "Manual crop for all images":
-        st.write("Manual crop is applied to all uploaded images using the same pixel coordinates.")
-        c1, c2 = st.columns(2)
-        with c1:
-            x1 = st.number_input("x1", min_value=0, max_value=W - 1, value=int(W * 0.08), step=1)
-            y1 = st.number_input("y1", min_value=0, max_value=H - 1, value=int(H * 0.12), step=1)
-        with c2:
-            x2 = st.number_input("x2", min_value=1, max_value=W, value=int(W * 0.80), step=1)
-            y2 = st.number_input("y2", min_value=1, max_value=H, value=int(H * 0.84), step=1)
-        manual_vals = (int(x1), int(y1), int(x2), int(y2))
-
-    analysis_roi = None
-    if stats_from_roi_only:
-        st.subheader("Manual analysis area for statistics")
-        st.write("Set a free rectangular ROI using independent corner coordinates. The box is not constrained to any fixed aspect ratio.")
-        a1, a2 = st.columns(2)
-        with a1:
-            roi_x1 = st.number_input("ROI x1 (left)", min_value=0, max_value=W - 1, value=int(W * 0.12), step=1)
-            roi_y1 = st.number_input("ROI y1 (top)", min_value=0, max_value=H - 1, value=int(H * 0.18), step=1)
-        with a2:
-            roi_x2 = st.number_input("ROI x2 (right)", min_value=1, max_value=W, value=int(W * 0.70), step=1)
-            roi_y2 = st.number_input("ROI y2 (bottom)", min_value=1, max_value=H, value=int(H * 0.80), step=1)
-        analysis_roi = (int(roi_x1), int(roi_y1), int(roi_x2), int(roi_y2))
-        st.write(f"ROI size: width = {analysis_roi[2] - analysis_roi[0]} px, height = {analysis_roi[3] - analysis_roi[1]} px")
-        st.caption("Changing ROI values will automatically refresh the statistics and ROI overlay.")
-
-    st.subheader("Displayed maximum dose for each image")
-    st.write("Enter the value shown at the top of the grayscale dose scale for each PNG.")
+    st.subheader("Session dose calibration")
+    st.write("Enter the displayed maximum dose shown at the top of the grayscale scale for each uploaded session.")
 
     displayed_max_inputs = {}
-    input_cols = st.columns(2)
+    dose_cols = st.columns(2)
     for i, file in enumerate(uploaded_files):
-        with input_cols[i % 2]:
-            displayed_max_inputs[file.name] = st.number_input(
-                f"Displayed max dose for {file.name} (Gy)",
+        file_key = f"{i}_{file.name}"
+        with dose_cols[i % 2]:
+            displayed_max_inputs[file_key] = st.number_input(
+                f"{file.name} displayed max dose (Gy)",
                 min_value=0.0,
                 value=1.0,
                 step=0.001,
                 format="%.3f",
-                key=f"maxdose_{file.name}",
+                key=f"maxdose_{file_key}",
             )
 
-    build_clicked = st.button("Build reconstructed cumulative map", type="primary")
+    with st.expander("Advanced settings"):
+        crop_mode = st.selectbox(
+            "Map panel crop",
+            ["Auto-detect map panel", "Use full image", "Manual crop for all images"],
+            index=0,
+        )
 
-    if build_clicked or "cumulative_dose" not in st.session_state:
+        size_mode = st.selectbox(
+            "Size harmonisation",
+            [
+                "Strict (all reconstructed maps must match exactly)",
+                "Crop to smallest common size",
+                "Pad to largest common size",
+            ],
+            index=1,
+        )
+
+        mask_threshold = st.slider(
+            "Background threshold",
+            min_value=220,
+            max_value=255,
+            value=245,
+            step=1,
+        )
+
+        show_session_previews = st.checkbox("Show reconstructed session previews", value=False)
+        show_histogram = st.checkbox("Show histogram for inclusion ROI", value=False)
+        show_downloads = st.checkbox("Show downloads", value=True)
+
+        sample_img = Image.open(uploaded_files[0]).convert("L")
+        sample_arr = np.array(sample_img)
+        H, W = sample_arr.shape
+
+        manual_vals = None
+        if crop_mode == "Manual crop for all images":
+            st.write("Manual crop is applied to all sessions before reconstruction.")
+            c1, c2 = st.columns(2)
+            with c1:
+                crop_x1 = st.number_input("Crop x1", min_value=0, max_value=W - 1, value=int(W * 0.08), step=1)
+                crop_y1 = st.number_input("Crop y1", min_value=0, max_value=H - 1, value=int(H * 0.12), step=1)
+            with c2:
+                crop_x2 = st.number_input("Crop x2", min_value=1, max_value=W, value=int(W * 0.80), step=1)
+                crop_y2 = st.number_input("Crop y2", min_value=1, max_value=H, value=int(H * 0.84), step=1)
+            manual_vals = (int(crop_x1), int(crop_y1), int(crop_x2), int(crop_y2))
+    if "crop_mode" not in locals():
+        crop_mode = "Auto-detect map panel"
+        size_mode = "Crop to smallest common size"
+        mask_threshold = 245
+        manual_vals = None
+        show_session_previews = False
+        show_histogram = False
+        show_downloads = True
+
+    build_clicked = st.button("Build cumulative map", type="primary")
+
+    current_signature = {
+        "files": tuple((i, f.name, len(f.getvalue())) for i, f in enumerate(uploaded_files)),
+        "displayed_max": tuple(
+            (f"{i}_{f.name}", float(displayed_max_inputs[f"{i}_{f.name}"]))
+            for i, f in enumerate(uploaded_files)
+        ),
+        "crop_mode": crop_mode,
+        "size_mode": size_mode,
+        "mask_threshold": mask_threshold,
+        "manual_vals": manual_vals,
+    }
+
+    needs_rebuild = (
+        build_clicked
+        or st.session_state.cumulative_dose is None
+        or st.session_state.reconstruction_signature != current_signature
+    )
+
+    if needs_rebuild:
         try:
-            preview_records = []
+            session_rows = []
             reconstructed = []
 
-            for file in uploaded_files:
+            for i, file in enumerate(uploaded_files):
+                file_key = f"{i}_{file.name}"
+                displayed_max = float(displayed_max_inputs[file_key])
+
                 img_gray = Image.open(file).convert("L")
                 gray = np.array(img_gray, dtype=np.uint8)
 
@@ -411,16 +386,15 @@ if uploaded_files:
                     x1, y1, x2, y2 = manual_vals
 
                 crop = gray[y1:y2, x1:x2]
-                displayed_max = float(displayed_max_inputs[file.name])
-                dose_map = reconstruct_displayed_dose(crop, displayed_max, mask_threshold=mask_threshold)
-                reconstructed.append((file.name, dose_map, displayed_max, (x1, y1, x2, y2), crop))
+                dose_map = reconstruct_displayed_dose(crop, displayed_max_dose=displayed_max, mask_threshold=mask_threshold)
 
-                preview_records.append(
+                reconstructed.append((file.name, dose_map, displayed_max, (x1, y1, x2, y2)))
+
+                session_rows.append(
                     {
                         "file": file.name,
-                        "crop_box": f"({x1}, {y1}) to ({x2}, {y2})",
-                        "cropped_shape": str(crop.shape),
                         "displayed_max_gy": displayed_max,
+                        "crop_box": f"({x1}, {y1}) to ({x2}, {y2})",
                         "reconstructed_peak_gy": float(np.max(dose_map)),
                         "nonzero_pixels": int(np.count_nonzero(dose_map > 0)),
                     }
@@ -439,195 +413,154 @@ if uploaded_files:
             else:
                 target_h, target_w = max(heights), max(widths)
 
-            processed = []
-            for name, dose_map, displayed_max, bbox, crop in reconstructed:
+            processed_maps = []
+            for name, dose_map, displayed_max, bbox in reconstructed:
                 if size_mode == "Crop to smallest common size":
                     dose_proc = center_crop(dose_map, target_h, target_w)
                 elif size_mode == "Pad to largest common size":
                     dose_proc = center_pad(dose_map, target_h, target_w, pad_value=0.0)
                 else:
                     dose_proc = dose_map
-                processed.append((name, dose_proc, displayed_max, bbox, crop))
+                processed_maps.append((name, dose_proc, displayed_max, bbox))
 
-            cumulative_dose = np.sum([p[1] for p in processed], axis=0)
+            cumulative_dose = np.sum([m[1] for m in processed_maps], axis=0)
 
-            st.session_state.processed = processed
-            st.session_state.preview_records = preview_records
             st.session_state.cumulative_dose = cumulative_dose
-            st.session_state.session_vmax = max(p[2] for p in processed) if use_global_scale else None
-            st.session_state.use_global_scale = use_global_scale
+            st.session_state.processed_maps = processed_maps
+            st.session_state.session_rows = session_rows
+            st.session_state.reconstruction_signature = current_signature
 
         except Exception as e:
             st.error(f"Error: {e}")
 
-    if "cumulative_dose" in st.session_state:
+    if st.session_state.cumulative_dose is not None:
         cumulative_dose = st.session_state.cumulative_dose
-        processed = st.session_state.processed
-        preview_records = st.session_state.preview_records
-        session_vmax = st.session_state.session_vmax if st.session_state.use_global_scale else None
+        processed_maps = st.session_state.processed_maps
+        session_rows = st.session_state.session_rows
 
-        roi_used = clamp_roi(analysis_roi, cumulative_dose.shape[1], cumulative_dose.shape[0]) if (stats_from_roi_only and analysis_roi is not None) else None
-        overall_stats = roi_stats(cumulative_dose, roi_used)
+        st.subheader("Inclusion ROI on reconstructed map")
+        st.caption("Use one free rectangle on the reconstructed map. Statistics are calculated only inside this ROI.")
 
-        st.success(f"Cumulative reconstructed map ready. Final size: {cumulative_dose.shape}")
-        if roi_used is not None:
-            st.info(f"Statistics calculated only inside ROI: x={roi_used[0]} to {roi_used[2]}, y={roi_used[1]} to {roi_used[3]}")
+        map_h, map_w = cumulative_dose.shape
+        r1, r2 = st.columns(2)
+        with r1:
+            roi_x1 = st.number_input("ROI x1 (left)", min_value=0, max_value=map_w - 1, value=int(map_w * 0.08), step=1)
+            roi_y1 = st.number_input("ROI y1 (top)", min_value=0, max_value=map_h - 1, value=int(map_h * 0.08), step=1)
+        with r2:
+            roi_x2 = st.number_input("ROI x2 (right)", min_value=1, max_value=map_w, value=int(map_w * 0.72), step=1)
+            roi_y2 = st.number_input("ROI y2 (bottom)", min_value=1, max_value=map_h, value=int(map_h * 0.82), step=1)
 
-        st.subheader("Crop preview and reconstruction summary")
-        st.dataframe(preview_records, use_container_width=True)
+        inclusion_roi = clamp_roi((roi_x1, roi_y1, roi_x2, roi_y2), map_w, map_h)
+        st.write(f"ROI size: width = {inclusion_roi[2] - inclusion_roi[0]} px, height = {inclusion_roi[3] - inclusion_roi[1]} px")
 
-        st.subheader("Individual reconstructed session maps")
-        session_cols = st.columns(2)
-        session_pngs = []
+        global_stats = compute_stats(cumulative_dose, roi=None)
+        roi_stats = compute_stats(cumulative_dose, roi=inclusion_roi)
 
-        for i, (name, dose_map, displayed_max, bbox, crop) in enumerate(processed):
-            with session_cols[i % 2]:
-                st.markdown(f"**{name}**")
-                st.caption(f"Crop box: {bbox}")
-                plotly_fig = render_interactive_dose_map(
-                    dose_map,
-                    title=f"{name} | reconstructed peak {np.max(dose_map):.3f} Gy",
-                    vmax=session_vmax if session_vmax is not None else displayed_max,
-                )
-                st.plotly_chart(plotly_fig, use_container_width=True)
+        display_map = masked_to_inclusion_roi(cumulative_dose, inclusion_roi)
 
-                fig = render_dose_figure(
-                    dose_map,
-                    title=f"{name} | reconstructed peak {np.max(dose_map):.3f} Gy",
-                    vmax=session_vmax if session_vmax is not None else displayed_max,
-                )
-                session_pngs.append((name.replace('.png', '_reconstructed.png'), fig_to_png_bytes(fig)))
-                plt.close(fig)
+        left, right = st.columns([1.4, 1])
 
-        st.subheader("Cumulative reconstructed dose map")
-        c1, c2 = st.columns([1.4, 1])
-
-        with c1:
-            plotly_cum = render_interactive_dose_map(
-                cumulative_dose,
-                title=f"Cumulative reconstructed dose | peak {overall_stats['peak_cumulative_dose']:.3f} Gy",
+        with left:
+            plotly_map = render_interactive_map(
+                display_map,
+                title=f"Cumulative reconstructed dose | ROI peak {roi_stats['peak_dose']:.3f} Gy",
                 vmax=max(float(np.max(cumulative_dose)), 1.0),
-                roi_used=roi_used,
-                roi_list=st.session_state.roi_list,
-                peak_xy=(overall_stats['peak_x'], overall_stats['peak_y'])
+                inclusion_roi=inclusion_roi,
+                peak_xy=(roi_stats["peak_x"], roi_stats["peak_y"]),
             )
-            st.plotly_chart(plotly_cum, use_container_width=True)
+            st.plotly_chart(plotly_map, use_container_width=True)
 
-            fig_cum = render_dose_figure(
-                cumulative_dose,
-                title=f"Cumulative reconstructed dose | peak {overall_stats['peak_cumulative_dose']:.3f} Gy",
+        with right:
+            st.metric("Number of sessions", len(processed_maps))
+
+            st.write("Global map statistics")
+            st.write(f"Peak dose: {global_stats['peak_dose']:.3f} Gy")
+            st.write(f"Peak location: ({global_stats['peak_x']}, {global_stats['peak_y']})")
+
+            st.write("")
+            st.write("Inclusion ROI statistics")
+            st.write(f"Peak dose: {roi_stats['peak_dose']:.3f} Gy")
+            st.write(f"Peak location: ({roi_stats['peak_x']}, {roi_stats['peak_y']})")
+            st.write(f"Mean dose: {roi_stats['mean_dose']:.3f} Gy")
+            st.write(f"Median dose: {roi_stats['median_dose']:.3f} Gy")
+            st.write(f"Std deviation: {roi_stats['std_dose']:.3f} Gy")
+            st.write(f"Minimum non-zero dose: {roi_stats['min_nonzero_dose']:.3f} Gy")
+            st.write(f"95th percentile: {roi_stats['p95_dose']:.3f} Gy")
+            st.write(f"Dose sum over ROI: {roi_stats['dose_sum']:.3f}")
+            st.write(f"Non-zero pixels: {roi_stats['nonzero_pixels']}")
+            st.write(f"Pixels ≥ 2 Gy: {roi_stats['thr2']}")
+            st.write(f"Pixels ≥ 5 Gy: {roi_stats['thr5']}")
+            st.write(f"Pixels ≥ 10 Gy: {roi_stats['thr10']}")
+
+        if show_session_previews:
+            st.subheader("Reconstructed session previews")
+            preview_cols = st.columns(2)
+            for i, (name, dose_map, displayed_max, bbox) in enumerate(processed_maps):
+                with preview_cols[i % 2]:
+                    st.markdown(f"**{name}**")
+                    st.caption(f"Crop box: {bbox}")
+                    session_display = masked_to_inclusion_roi(dose_map, inclusion_roi)
+                    session_fig = render_interactive_map(
+                        session_display,
+                        title=f"{name} | peak {compute_stats(dose_map, inclusion_roi)['peak_dose']:.3f} Gy",
+                        vmax=max(float(np.max(cumulative_dose)), 1.0),
+                        inclusion_roi=inclusion_roi,
+                    )
+                    st.plotly_chart(session_fig, use_container_width=True)
+
+        if show_histogram:
+            st.subheader("Dose histogram inside inclusion ROI")
+            nz = roi_stats["stats_map"][roi_stats["stats_map"] > 0]
+            if nz.size > 0:
+                fig_hist, ax_hist = plt.subplots(figsize=(7, 4))
+                ax_hist.hist(nz.ravel(), bins=40)
+                ax_hist.set_xlabel("Dose (Gy)")
+                ax_hist.set_ylabel("Pixel count")
+                ax_hist.set_title("Histogram of non-zero dose values inside ROI")
+                st.pyplot(fig_hist)
+                plt.close(fig_hist)
+            else:
+                st.info("No non-zero pixels inside the inclusion ROI.")
+
+        if show_downloads:
+            st.subheader("Downloads")
+
+            fig_cum = render_matplotlib_map(
+                display_map,
+                title=f"Cumulative reconstructed dose | ROI peak {roi_stats['peak_dose']:.3f} Gy",
                 vmax=max(float(np.max(cumulative_dose)), 1.0),
             )
             cum_png = fig_to_png_bytes(fig_cum)
             plt.close(fig_cum)
 
-        with c2:
-            st.metric("Number of sessions", len(processed))
-            st.metric("Peak cumulative dose", f"{overall_stats['peak_cumulative_dose']:.3f} Gy")
-            st.metric("Peak location (X, Y)", f"({overall_stats['peak_x']}, {overall_stats['peak_y']})")
-            st.caption("Coordinates are reported as cursor-style X,Y positions, where X is horizontal and Y is vertical.")
-            st.write("Cumulative map statistics")
-            st.write(f"Mean dose: {overall_stats['mean_dose']:.3f} Gy")
-            st.write(f"Median dose: {overall_stats['median_dose']:.3f} Gy")
-            st.write(f"Std deviation: {overall_stats['std_dose']:.3f} Gy")
-            st.write(f"Minimum non-zero dose: {overall_stats['min_nonzero_dose']:.3f} Gy")
-            st.write(f"95th percentile: {overall_stats['p95_dose']:.3f} Gy")
-            st.write(f"Dose sum over selected area: {overall_stats['dose_sum']:.3f}")
-            st.write(f"Non-zero pixels: {overall_stats['nonzero_pixels']}")
-            st.write("Pixels above thresholds")
-            st.write(f"≥ 2 Gy: {overall_stats['thr2']}")
-            st.write(f"≥ 5 Gy: {overall_stats['thr5']}")
-            st.write(f"≥ 10 Gy: {overall_stats['thr10']}")
+            csv_bytes = build_csv_bytes(session_rows, global_stats, roi_stats)
 
-        st.subheader("Dose histogram inside selected area")
-        nz = overall_stats["stats_map"][overall_stats["stats_map"] > 0]
-        if nz.size > 0:
-            fig_hist, ax_hist = plt.subplots(figsize=(7, 4))
-            ax_hist.hist(nz.ravel(), bins=40)
-            ax_hist.set_xlabel("Dose (Gy)")
-            ax_hist.set_ylabel("Pixel count")
-            ax_hist.set_title("Histogram of non-zero dose values in selected area")
-            st.pyplot(fig_hist)
-            plt.close(fig_hist)
-        else:
-            st.info("No non-zero pixels in the selected area, so the histogram is empty.")
+            npy_buf = io.BytesIO()
+            np.save(npy_buf, cumulative_dose)
+            npy_buf.seek(0)
 
-        st.subheader("Additional ROIs")
-        st.write("You can save the current free ROI as an additional region and compare multiple regions.")
-        r1, r2 = st.columns([1, 1])
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("cumulative_reconstructed_dose.npy", npy_buf.getvalue())
+                zf.writestr("cumulative_reconstructed_dose_roi_view.png", cum_png)
+                zf.writestr("reconstruction_summary.csv", csv_bytes)
+            zip_buf.seek(0)
 
-        with r1:
-            roi_label = st.text_input("Label for current ROI", value=f"ROI {len(st.session_state.roi_list) + 1}")
-        with r2:
-            add_roi_clicked = st.button("Add current ROI to comparison table")
-
-        if add_roi_clicked and roi_used is not None:
-            st.session_state.roi_list.append({
-                "label": roi_label,
-                "roi": tuple(roi_used),
-            })
-
-        if st.button("Clear saved ROIs"):
-            st.session_state.roi_list = []
-
-        multi_roi_stats = []
-        if st.session_state.roi_list:
-            for item in st.session_state.roi_list:
-                stats = roi_stats(cumulative_dose, item["roi"])
-                multi_roi_stats.append((item["label"], stats))
-
-            roi_rows = []
-            for label, stats in multi_roi_stats:
-                roi_rows.append(
-                    {
-                        "label": label,
-                        "roi": str(stats["roi"]),
-                        "peak_gy": round(stats["peak_cumulative_dose"], 3),
-                        "peak_xy": f"({stats['peak_x']}, {stats['peak_y']})",
-                        "mean_gy": round(stats["mean_dose"], 3),
-                        "median_gy": round(stats["median_dose"], 3),
-                        "p95_gy": round(stats["p95_dose"], 3),
-                        "dose_sum": round(stats["dose_sum"], 3),
-                        "nonzero_pixels": stats["nonzero_pixels"],
-                        ">=2Gy": stats["thr2"],
-                        ">=5Gy": stats["thr5"],
-                        ">=10Gy": stats["thr10"],
-                    }
+            d1, d2 = st.columns(2)
+            with d1:
+                st.download_button(
+                    "Download cumulative array (.npy)",
+                    data=npy_buf.getvalue(),
+                    file_name="cumulative_reconstructed_dose.npy",
+                    mime="application/octet-stream",
                 )
-            st.dataframe(roi_rows, use_container_width=True)
+            with d2:
+                st.download_button(
+                    "Download results (.zip)",
+                    data=zip_buf.getvalue(),
+                    file_name="reconstructed_dose_results.zip",
+                    mime="application/zip",
+                )
 
-        st.subheader("Hotspot helper")
-        st.write("The main hotspot is marked on the cumulative map. Use the peak X,Y values to position a tighter ROI around it if you want local statistics.")
-
-        csv_bytes = build_csv_bytes(preview_records, overall_stats, multi_roi_stats)
-
-        npy_buf = io.BytesIO()
-        np.save(npy_buf, cumulative_dose)
-        npy_buf.seek(0)
-
-        zip_buf = io.BytesIO()
-        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("cumulative_reconstructed_dose.npy", npy_buf.getvalue())
-            zf.writestr("cumulative_reconstructed_dose.png", cum_png)
-            zf.writestr("reconstruction_summary.csv", csv_bytes)
-            for fname, content in session_pngs:
-                zf.writestr(fname, content)
-        zip_buf.seek(0)
-
-        d1, d2 = st.columns(2)
-        with d1:
-            st.download_button(
-                "Download cumulative array (.npy)",
-                data=npy_buf.getvalue(),
-                file_name="cumulative_reconstructed_dose.npy",
-                mime="application/octet-stream",
-            )
-        with d2:
-            st.download_button(
-                "Download all results (.zip)",
-                data=zip_buf.getvalue(),
-                file_name="reconstructed_dose_results.zip",
-                mime="application/zip",
-            )
 else:
     st.caption("Upload one or more OpenREM PNG images to begin.")
