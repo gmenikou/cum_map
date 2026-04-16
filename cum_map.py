@@ -230,6 +230,7 @@ if uploaded_files:
         roi_height = max(0, int(roi_y2) - int(roi_y1))
         st.write(f"ROI size: width = {roi_width} px, height = {roi_height} px")
         analysis_roi = (int(roi_x1), int(roi_y1), int(roi_x2), int(roi_y2))
+        st.caption("Changing ROI values will automatically refresh the statistics and ROI overlay.")
 
     st.subheader("Displayed maximum dose for each image")
     st.write("Enter the value shown at the TOP of the grayscale dose scale for each PNG.")
@@ -247,7 +248,9 @@ if uploaded_files:
                 key=f"maxdose_{file.name}",
             )
 
-    if st.button("Build reconstructed cumulative map", type="primary"):
+    run_reconstruction = st.button("Build reconstructed cumulative map", type="primary") or uploaded_files is not None
+
+    if run_reconstruction:
         try:
             preview_records = []
             reconstructed = []
@@ -447,7 +450,8 @@ if uploaded_files:
             csv_lines.append(f"pixels_ge_2gy,{thr2}")
             csv_lines.append(f"pixels_ge_5gy,{thr5}")
             csv_lines.append(f"pixels_ge_10gy,{thr10}")
-            csv_bytes = "\n".join(csv_lines).encode("utf-8")
+            csv_bytes = "
+".join(csv_lines).encode("utf-8")
 
             npy_buf = io.BytesIO()
             np.save(npy_buf, cumulative_dose)
