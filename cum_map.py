@@ -155,6 +155,7 @@ if uploaded_files:
         value=True,
         help="Use this to exclude annotations and calculate cumulative-map statistics only inside the real map area.",
     )
+    st.caption("The analysis ROI is a free rectangle defined by independent X1, Y1, X2, Y2 coordinates. There is no fixed aspect ratio.")
 
     crop_mode = st.selectbox(
         "Map area selection",
@@ -213,16 +214,21 @@ if uploaded_files:
     analysis_roi = None
     if stats_from_roi_only:
         st.subheader("Manual analysis area for statistics")
-        st.write("These coordinates define the area INSIDE the reconstructed map where cumulative statistics will be calculated.")
+        st.write("Set a free rectangular ROI using independent corner coordinates. The box is not constrained to any fixed aspect ratio.")
+        preview_w = W
+        preview_h = H
         a1, a2 = st.columns(2)
         with a1:
-            roi_x1 = st.number_input("ROI x1", min_value=0, max_value=W - 1, value=int(W * 0.12), step=1)
-            roi_y1 = st.number_input("ROI y1", min_value=0, max_value=H - 1, value=int(H * 0.18), step=1)
+            roi_x1 = st.number_input("ROI x1 (left)", min_value=0, max_value=preview_w - 1, value=int(preview_w * 0.12), step=1)
+            roi_y1 = st.number_input("ROI y1 (top)", min_value=0, max_value=preview_h - 1, value=int(preview_h * 0.18), step=1)
         with a2:
-            roi_x2 = st.number_input("ROI x2", min_value=1, max_value=W, value=int(W * 0.70), step=1)
-            roi_y2 = st.number_input("ROI y2", min_value=1, max_value=H, value=int(H * 0.80), step=1)
+            roi_x2 = st.number_input("ROI x2 (right)", min_value=1, max_value=preview_w, value=int(preview_w * 0.70), step=1)
+            roi_y2 = st.number_input("ROI y2 (bottom)", min_value=1, max_value=preview_h, value=int(preview_h * 0.80), step=1)
         if roi_x2 <= roi_x1 or roi_y2 <= roi_y1:
             st.error("ROI coordinates must satisfy x2 > x1 and y2 > y1.")
+        roi_width = max(0, int(roi_x2) - int(roi_x1))
+        roi_height = max(0, int(roi_y2) - int(roi_y1))
+        st.write(f"ROI size: width = {roi_width} px, height = {roi_height} px")
         analysis_roi = (int(roi_x1), int(roi_y1), int(roi_x2), int(roi_y2))
 
     st.subheader("Displayed maximum dose for each image")
@@ -379,6 +385,17 @@ if uploaded_files:
                         type="rect",
                         x0=roi_used[0], y0=roi_used[1], x1=roi_used[2], y1=roi_used[3],
                         line=dict(color="white", width=2),
+                        fillcolor="rgba(0,0,0,0)",
+                    )
+                    plotly_cum.add_annotation(
+                        x=roi_used[0],
+                        y=roi_used[1],
+                        text=f"ROI {roi_used[2]-roi_used[0]}×{roi_used[3]-roi_used[1]} px",
+                        showarrow=False,
+                        xanchor="left",
+                        yanchor="bottom",
+                        font=dict(color="white"),
+                        bgcolor="rgba(0,0,0,0.45)",
                     )
                 st.plotly_chart(plotly_cum, use_container_width=True)
                 fig_cum = render_dose_figure(
@@ -430,8 +447,8 @@ if uploaded_files:
             csv_lines.append(f"pixels_ge_2gy,{thr2}")
             csv_lines.append(f"pixels_ge_5gy,{thr5}")
             csv_lines.append(f"pixels_ge_10gy,{thr10}")
-            csv_bytes = "\n".join(csv_lines).encode("utf-8")
-
+            csv_bytes = "
+".join(csv_lines).encode("utf-8")
 
             npy_buf = io.BytesIO()
             np.save(npy_buf, cumulative_dose)
