@@ -150,6 +150,12 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
     st.subheader("Reconstruction settings")
 
+    stats_from_roi_only = st.checkbox(
+        "Calculate statistics only inside a manually selected analysis area",
+        value=True,
+        help="Use this to exclude annotations and calculate cumulative-map statistics only inside the real map area.",
+    )
+
     crop_mode = st.selectbox(
         "Map area selection",
         [
@@ -203,6 +209,21 @@ if uploaded_files:
         if x2 <= x1 or y2 <= y1:
             st.error("Manual crop coordinates must satisfy x2 > x1 and y2 > y1.")
         manual_vals = (int(x1), int(y1), int(x2), int(y2))
+
+    analysis_roi = None
+    if stats_from_roi_only:
+        st.subheader("Manual analysis area for statistics")
+        st.write("These coordinates define the area INSIDE the reconstructed map where cumulative statistics will be calculated.")
+        a1, a2 = st.columns(2)
+        with a1:
+            roi_x1 = st.number_input("ROI x1", min_value=0, max_value=W - 1, value=int(W * 0.12), step=1)
+            roi_y1 = st.number_input("ROI y1", min_value=0, max_value=H - 1, value=int(H * 0.18), step=1)
+        with a2:
+            roi_x2 = st.number_input("ROI x2", min_value=1, max_value=W, value=int(W * 0.70), step=1)
+            roi_y2 = st.number_input("ROI y2", min_value=1, max_value=H, value=int(H * 0.80), step=1)
+        if roi_x2 <= roi_x1 or roi_y2 <= roi_y1:
+            st.error("ROI coordinates must satisfy x2 > x1 and y2 > y1.")
+        analysis_roi = (int(roi_x1), int(roi_y1), int(roi_x2), int(roi_y2))
 
     st.subheader("Displayed maximum dose for each image")
     st.write("Enter the value shown at the TOP of the grayscale dose scale for each PNG.")
@@ -282,16 +303,42 @@ if uploaded_files:
                 processed.append((name, dose_proc, displayed_max, bbox, crop))
 
             cumulative_dose = np.sum([p[1] for p in processed], axis=0)
-            peak_cumulative_dose = float(np.max(cumulative_dose))
-            peak_idx = np.unravel_index(np.argmax(cumulative_dose), cumulative_dose.shape)
-            peak_y = int(peak_idx[0])
-            peak_x = int(peak_idx[1])
 
-            thr2 = int(np.sum(cumulative_dose >= 2.0))
-            thr5 = int(np.sum(cumulative_dose >= 5.0))
-            thr10 = int(np.sum(cumulative_dose >= 10.0))
+            stats_map = cumulative_dose.copy()
+            roi_used = None
+            if stats_from_roi_only and analysis_roi is not None:
+                rx1, ry1, rx2, ry2 = analysis_roi
+                rx1 = max(0, min(rx1, cumulative_dose.shape[1] - 1))
+                rx2 = max(rx1 + 1, min(rx2, cumulative_dose.shape[1]))
+                ry1 = max(0, min(ry1, cumulative_dose.shape[0] - 1))
+                ry2 = max(ry1 + 1, min(ry2, cumulative_dose.shape[0]))
+                roi_used = (rx1, ry1, rx2, ry2)
+                stats_map = cumulative_dose[ry1:ry2, rx1:rx2]
+
+            peak_cumulative_dose = float(np.max(stats_map))
+            peak_idx_local = np.unravel_index(np.argmax(stats_map), stats_map.shape)
+            if roi_used is not None:
+                peak_y = int(peak_idx_local[0] + roi_used[1])
+                peak_x = int(peak_idx_local[1] + roi_used[0])
+            else:
+                peak_y = int(peak_idx_local[0])
+                peak_x = int(peak_idx_local[1])
+
+            nonzero = stats_map[stats_map > 0]
+            mean_dose = float(np.mean(nonzero)) if nonzero.size > 0 else 0.0
+            median_dose = float(np.median(nonzero)) if nonzero.size > 0 else 0.0
+            std_dose = float(np.std(nonzero)) if nonzero.size > 0 else 0.0
+            min_nonzero_dose = float(np.min(nonzero)) if nonzero.size > 0 else 0.0
+            p95_dose = float(np.percentile(nonzero, 95)) if nonzero.size > 0 else 0.0
+            sum_dose = float(np.sum(stats_map))
+            area_nonzero = int(np.count_nonzero(stats_map > 0))
+            thr2 = int(np.sum(stats_map >= 2.0))
+            thr5 = int(np.sum(stats_map >= 5.0))
+            thr10 = int(np.sum(stats_map >= 10.0))
 
             st.success(f"Cumulative reconstructed map created. Final size: {cumulative_dose.shape}")
+            if roi_used is not None:
+                st.info(f"Statistics calculated only inside ROI: x={roi_used[0]} to {roi_used[2]}, y={roi_used[1]} to {roi_used[3]}")
 
             st.subheader("Crop preview and reconstruction summary")
             st.dataframe(preview_records, use_container_width=True)
@@ -327,6 +374,12 @@ if uploaded_files:
                     title=f"Cumulative reconstructed dose | peak {peak_cumulative_dose:.3f} Gy",
                     vmax=peak_cumulative_dose if peak_cumulative_dose > 0 else 1.0,
                 )
+                if roi_used is not None:
+                    plotly_cum.add_shape(
+                        type="rect",
+                        x0=roi_used[0], y0=roi_used[1], x1=roi_used[2], y1=roi_used[3],
+                        line=dict(color="white", width=2),
+                    )
                 st.plotly_chart(plotly_cum, use_container_width=True)
                 fig_cum = render_dose_figure(
                     cumulative_dose,
@@ -341,6 +394,14 @@ if uploaded_files:
                 st.metric("Peak cumulative dose", f"{peak_cumulative_dose:.3f} Gy")
                 st.metric("Peak location (X, Y)", f"({peak_x}, {peak_y})")
                 st.caption("Coordinates are reported as cursor-style X,Y positions, where X is horizontal and Y is vertical.")
+                st.write("Cumulative map statistics")
+                st.write(f"Mean dose: {mean_dose:.3f} Gy")
+                st.write(f"Median dose: {median_dose:.3f} Gy")
+                st.write(f"Std deviation: {std_dose:.3f} Gy")
+                st.write(f"Minimum non-zero dose: {min_nonzero_dose:.3f} Gy")
+                st.write(f"95th percentile: {p95_dose:.3f} Gy")
+                st.write(f"Dose sum over selected area: {sum_dose:.3f}")
+                st.write(f"Non-zero pixels: {area_nonzero}")
                 st.write("Pixels above thresholds")
                 st.write(f"≥ 2 Gy: {thr2}")
                 st.write(f"≥ 5 Gy: {thr5}")
@@ -353,8 +414,24 @@ if uploaded_files:
                 csv_lines.append(
                     f"{row['file']},{row['crop_box']},{row['cropped_shape']},{row['displayed_max_gy']},{row['reconstructed_peak_gy']},{row['nonzero_pixels']}"
                 )
-            csv_lines.append(f"TOTAL,,,,{peak_cumulative_dose},")
-            csv_bytes = "\n".join(csv_lines).encode("utf-8")
+            csv_lines.append("")
+            csv_lines.append("cumulative_statistic,value")
+            csv_lines.append(f"stats_roi,{roi_used if roi_used is not None else 'full_map'}")
+            csv_lines.append(f"peak_cumulative_dose_gy,{peak_cumulative_dose}")
+            csv_lines.append(f"peak_location_x,{peak_x}")
+            csv_lines.append(f"peak_location_y,{peak_y}")
+            csv_lines.append(f"mean_dose_gy,{mean_dose}")
+            csv_lines.append(f"median_dose_gy,{median_dose}")
+            csv_lines.append(f"std_dose_gy,{std_dose}")
+            csv_lines.append(f"minimum_nonzero_dose_gy,{min_nonzero_dose}")
+            csv_lines.append(f"dose_p95_gy,{p95_dose}")
+            csv_lines.append(f"dose_sum,{sum_dose}")
+            csv_lines.append(f"nonzero_pixels,{area_nonzero}")
+            csv_lines.append(f"pixels_ge_2gy,{thr2}")
+            csv_lines.append(f"pixels_ge_5gy,{thr5}")
+            csv_lines.append(f"pixels_ge_10gy,{thr10}")
+            csv_bytes = "
+".join(csv_lines).encode("utf-8")
 
             npy_buf = io.BytesIO()
             np.save(npy_buf, cumulative_dose)
