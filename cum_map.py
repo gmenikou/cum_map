@@ -4,6 +4,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import io
 import zipfile
+import plotly.express as px
 
 st.set_page_config(page_title="Cumulative Dose Map GUI", layout="wide")
 st.title("Cumulative Dose Map GUI")
@@ -33,6 +34,29 @@ def render_dose_figure(dose_map, title, vmax=None):
     cbar = plt.colorbar(im, ax=ax)
     cbar.set_label("Dose (Gy)")
     fig.tight_layout()
+    return fig
+
+
+def render_interactive_dose_map(dose_map, title, vmax=None):
+    use_vmax = vmax if vmax is not None and vmax > 0 else max(float(np.max(dose_map)), 1e-6)
+    fig = px.imshow(
+        dose_map,
+        color_continuous_scale="Jet",
+        zmin=0,
+        zmax=use_vmax,
+        aspect="equal",
+        origin="upper",
+        labels={"x": "X", "y": "Y", "color": "Dose (Gy)"},
+    )
+    fig.update_traces(
+        hovertemplate="X: %{x}<br>Y: %{y}<br>Dose: %{z:.3f} Gy<extra></extra>"
+    )
+    fig.update_layout(
+        title=title,
+        margin=dict(l=10, r=10, t=40, b=10),
+        xaxis_title="X",
+        yaxis_title="Y",
+    )
     return fig
 
 
@@ -260,6 +284,8 @@ if uploaded_files:
             cumulative_dose = np.sum([p[1] for p in processed], axis=0)
             peak_cumulative_dose = float(np.max(cumulative_dose))
             peak_idx = np.unravel_index(np.argmax(cumulative_dose), cumulative_dose.shape)
+            peak_y = int(peak_idx[0])
+            peak_x = int(peak_idx[1])
 
             thr2 = int(np.sum(cumulative_dose >= 2.0))
             thr5 = int(np.sum(cumulative_dose >= 5.0))
@@ -279,31 +305,42 @@ if uploaded_files:
                 with session_cols[i % 2]:
                     st.markdown(f"**{name}**")
                     st.caption(f"Crop box: {bbox}")
+                    plotly_fig = render_interactive_dose_map(
+                        dose_map,
+                        title=f"{name} | reconstructed peak {np.max(dose_map):.3f} Gy",
+                        vmax=session_vmax if use_global_scale else displayed_max,
+                    )
+                    st.plotly_chart(plotly_fig, use_container_width=True)
                     fig = render_dose_figure(
                         dose_map,
                         title=f"{name} | reconstructed peak {np.max(dose_map):.3f} Gy",
                         vmax=session_vmax if use_global_scale else displayed_max,
                     )
-                    st.pyplot(fig)
                     session_pngs.append((name.replace('.png', '_reconstructed.png'), fig_to_png_bytes(fig).getvalue()))
                     plt.close(fig)
 
             st.subheader("Cumulative reconstructed dose map")
             c1, c2 = st.columns([1.3, 1])
             with c1:
+                plotly_cum = render_interactive_dose_map(
+                    cumulative_dose,
+                    title=f"Cumulative reconstructed dose | peak {peak_cumulative_dose:.3f} Gy",
+                    vmax=peak_cumulative_dose if peak_cumulative_dose > 0 else 1.0,
+                )
+                st.plotly_chart(plotly_cum, use_container_width=True)
                 fig_cum = render_dose_figure(
                     cumulative_dose,
                     title=f"Cumulative reconstructed dose | peak {peak_cumulative_dose:.3f} Gy",
                     vmax=peak_cumulative_dose if peak_cumulative_dose > 0 else 1.0,
                 )
-                st.pyplot(fig_cum)
                 cum_png = fig_to_png_bytes(fig_cum).getvalue()
                 plt.close(fig_cum)
 
             with c2:
                 st.metric("Number of sessions", len(processed))
                 st.metric("Peak cumulative dose", f"{peak_cumulative_dose:.3f} Gy")
-                st.metric("Peak location (row, col)", str(peak_idx))
+                st.metric("Peak location (X, Y)", f"({peak_x}, {peak_y})")
+                st.caption("Coordinates are reported as cursor-style X,Y positions, where X is horizontal and Y is vertical.")
                 st.write("Pixels above thresholds")
                 st.write(f"≥ 2 Gy: {thr2}")
                 st.write(f"≥ 5 Gy: {thr5}")
