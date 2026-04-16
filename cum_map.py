@@ -46,14 +46,29 @@ def render_matplotlib_map(dose_map, title, vmax=None):
     return fig
 
 
-def build_selectable_grid(width, height, step=4):
+def adaptive_grid_step(width, height, target_points=12000):
+    area = max(width * height, 1)
+    step = int(np.ceil(np.sqrt(area / target_points)))
+    return max(step, 2)
+
+
+def build_selectable_grid(width, height, step=None):
+    if step is None:
+        step = adaptive_grid_step(width, height)
     xs = np.arange(0, width, step, dtype=int)
     ys = np.arange(0, height, step, dtype=int)
     xx, yy = np.meshgrid(xs, ys)
-    return xx.ravel(), yy.ravel()
+    return xx.ravel(), yy.ravel(), step
 
 
-def render_interactive_map(dose_map, title, vmax=None, inclusion_roi=None, peak_xy=None, selectable=True):
+def render_interactive_map(
+    dose_map,
+    title,
+    vmax=None,
+    inclusion_roi=None,
+    peak_xy=None,
+    selectable=True,
+):
     use_vmax = vmax if vmax is not None and vmax > 0 else max(float(np.max(dose_map)), 1e-6)
     h, w = dose_map.shape
 
@@ -70,8 +85,9 @@ def render_interactive_map(dose_map, title, vmax=None, inclusion_roi=None, peak_
         )
     )
 
+    selection_step = None
     if selectable:
-        gx, gy = build_selectable_grid(w, h, step=4)
+        gx, gy, selection_step = build_selectable_grid(w, h)
         fig.add_trace(
             go.Scatter(
                 x=gx,
@@ -126,10 +142,9 @@ def render_interactive_map(dose_map, title, vmax=None, inclusion_roi=None, peak_
         yaxis_title="Y",
         dragmode="select",
     )
-
     fig.update_yaxes(autorange="reversed", scaleanchor="x", scaleratio=1)
 
-    return fig
+    return fig, selection_step
 
 
 def center_crop(arr, target_h, target_w):
@@ -237,10 +252,35 @@ def compute_stats(dose_map, roi=None):
     min_nonzero = float(np.min(nonzero)) if nonzero.size else 0.0
     p95 = float(np.percentile(nonzero, 95)) if nonzero.size else 0.0
     dose_sum = float(np.sum(stats_map)) if stats_map.size else 0.0
+
+    total_pixels = int(stats_map.size)
     nonzero_pixels = int(np.count_nonzero(stats_map > 0))
+
+    thr1 = int(np.sum(stats_map >= 1.0))
     thr2 = int(np.sum(stats_map >= 2.0))
     thr5 = int(np.sum(stats_map >= 5.0))
     thr10 = int(np.sum(stats_map >= 10.0))
+
+    def pct(count, denom):
+        return (100.0 * count / denom) if denom > 0 else 0.0
+
+    pct_roi_ge_1 = pct(thr1, total_pixels)
+    pct_roi_ge_2 = pct(thr2, total_pixels)
+    pct_roi_ge_5 = pct(thr5, total_pixels)
+
+    pct_nz_ge_1 = pct(thr1, nonzero_pixels)
+    pct_nz_ge_2 = pct(thr2, nonzero_pixels)
+    pct_nz_ge_5 = pct(thr5, nonzero_pixels)
+
+    def significance_label(percent_nonzero):
+        if percent_nonzero < 1.0:
+            return "Not significant"
+        elif percent_nonzero < 5.0:
+            return "Borderline"
+        elif percent_nonzero < 10.0:
+            return "Significant"
+        else:
+            return "Large significant region"
 
     return {
         "roi": roi,
@@ -253,10 +293,21 @@ def compute_stats(dose_map, roi=None):
         "min_nonzero_dose": min_nonzero,
         "p95_dose": p95,
         "dose_sum": dose_sum,
+        "total_pixels": total_pixels,
         "nonzero_pixels": nonzero_pixels,
+        "thr1": thr1,
         "thr2": thr2,
         "thr5": thr5,
         "thr10": thr10,
+        "pct_roi_ge_1": pct_roi_ge_1,
+        "pct_roi_ge_2": pct_roi_ge_2,
+        "pct_roi_ge_5": pct_roi_ge_5,
+        "pct_nz_ge_1": pct_nz_ge_1,
+        "pct_nz_ge_2": pct_nz_ge_2,
+        "pct_nz_ge_5": pct_nz_ge_5,
+        "sig_1gy": significance_label(pct_nz_ge_1),
+        "sig_2gy": significance_label(pct_nz_ge_2),
+        "sig_5gy": significance_label(pct_nz_ge_5),
         "stats_map": stats_map,
     }
 
@@ -270,9 +321,17 @@ def build_csv_bytes(session_rows, roi_stats):
         )
 
     lines.append("")
-    lines.append("summary,roi,peak_dose_gy,peak_x,peak_y,mean_dose_gy,median_dose_gy,std_dose_gy,min_nonzero_dose_gy,p95_dose_gy,dose_sum,nonzero_pixels,pixels_ge_2gy,pixels_ge_5gy,pixels_ge_10gy")
     lines.append(
-        f"roi,{roi_stats['roi']},{roi_stats['peak_dose']},{roi_stats['peak_x']},{roi_stats['peak_y']},{roi_stats['mean_dose']},{roi_stats['median_dose']},{roi_stats['std_dose']},{roi_stats['min_nonzero_dose']},{roi_stats['p95_dose']},{roi_stats['dose_sum']},{roi_stats['nonzero_pixels']},{roi_stats['thr2']},{roi_stats['thr5']},{roi_stats['thr10']}"
+        "summary,roi,peak_dose_gy,peak_x,peak_y,mean_dose_gy,median_dose_gy,std_dose_gy,min_nonzero_dose_gy,p95_dose_gy,dose_sum,total_pixels,nonzero_pixels,pixels_ge_1gy,pixels_ge_2gy,pixels_ge_5gy,pixels_ge_10gy,pct_roi_ge_1gy,pct_roi_ge_2gy,pct_roi_ge_5gy,pct_nonzero_ge_1gy,pct_nonzero_ge_2gy,pct_nonzero_ge_5gy,sig_1gy,sig_2gy,sig_5gy"
+    )
+    lines.append(
+        f"roi,{roi_stats['roi']},{roi_stats['peak_dose']},{roi_stats['peak_x']},{roi_stats['peak_y']},"
+        f"{roi_stats['mean_dose']},{roi_stats['median_dose']},{roi_stats['std_dose']},{roi_stats['min_nonzero_dose']},"
+        f"{roi_stats['p95_dose']},{roi_stats['dose_sum']},{roi_stats['total_pixels']},{roi_stats['nonzero_pixels']},"
+        f"{roi_stats['thr1']},{roi_stats['thr2']},{roi_stats['thr5']},{roi_stats['thr10']},"
+        f"{roi_stats['pct_roi_ge_1']},{roi_stats['pct_roi_ge_2']},{roi_stats['pct_roi_ge_5']},"
+        f"{roi_stats['pct_nz_ge_1']},{roi_stats['pct_nz_ge_2']},{roi_stats['pct_nz_ge_5']},"
+        f"{roi_stats['sig_1gy']},{roi_stats['sig_2gy']},{roi_stats['sig_5gy']}"
     )
 
     return "\n".join(lines).encode("utf-8")
@@ -497,7 +556,10 @@ if uploaded_files:
         session_rows = st.session_state.session_rows
 
         st.subheader("Inclusion ROI")
-        st.caption("Use box select on the cumulative map. The ROI stats and previews appear after a selection.")
+        st.caption(
+            "Use box select on the cumulative map. The ROI stats and previews appear after a selection. "
+            "Selection uses a lightweight invisible grid to reduce stall time."
+        )
 
         map_h, map_w = cumulative_dose.shape
 
@@ -506,7 +568,7 @@ if uploaded_files:
             tmp_stats = compute_stats(cumulative_dose, st.session_state.inclusion_roi)
             current_peak = (tmp_stats["peak_x"], tmp_stats["peak_y"])
 
-        selector_fig = render_interactive_map(
+        selector_fig, grid_step = render_interactive_map(
             cumulative_dose,
             title="Draw inclusion ROI with box select",
             vmax=max(float(np.max(cumulative_dose)), 1.0),
@@ -519,6 +581,7 @@ if uploaded_files:
             selector_fig,
             width="stretch",
             on_select="rerun",
+            selection_mode=("box",),
             config={
                 "modeBarButtonsToRemove": [
                     "lasso2d",
@@ -535,18 +598,20 @@ if uploaded_files:
         if new_roi is not None:
             st.session_state.inclusion_roi = new_roi
 
-        cols = st.columns([1, 1, 2])
-        with cols[0]:
+        controls = st.columns([1, 1, 2])
+        with controls[0]:
             if st.button("Clear inclusion ROI", width="stretch"):
                 st.session_state.inclusion_roi = None
                 st.rerun()
-        with cols[1]:
+        with controls[1]:
             if st.button("Use full map as ROI", width="stretch"):
                 st.session_state.inclusion_roi = (0, 0, map_w, map_h)
                 st.rerun()
 
+        st.caption(f"Selection grid step: {grid_step} px")
+
         if st.session_state.inclusion_roi is None:
-            st.info("No ROI selected yet. Draw a rectangle on the map with box select.")
+            st.info("No ROI selected yet. Draw a rectangle on the map with box select, or use the full-map button.")
         else:
             inclusion_roi = st.session_state.inclusion_roi
             roi_stats = compute_stats(cumulative_dose, roi=inclusion_roi)
@@ -555,7 +620,7 @@ if uploaded_files:
             left, right = st.columns([1.4, 1])
 
             with left:
-                result_fig = render_interactive_map(
+                result_fig, _ = render_interactive_map(
                     display_map,
                     title=f"Cumulative reconstructed dose | ROI peak {roi_stats['peak_dose']:.3f} Gy",
                     vmax=max(float(np.max(cumulative_dose)), 1.0),
@@ -583,10 +648,28 @@ if uploaded_files:
                 st.write(f"Minimum non-zero dose: {roi_stats['min_nonzero_dose']:.3f} Gy")
                 st.write(f"95th percentile: {roi_stats['p95_dose']:.3f} Gy")
                 st.write(f"Dose sum over ROI: {roi_stats['dose_sum']:.3f}")
-                st.write(f"Non-zero pixels: {roi_stats['nonzero_pixels']}")
-                st.write(f"Pixels ≥ 2 Gy: {roi_stats['thr2']}")
-                st.write(f"Pixels ≥ 5 Gy: {roi_stats['thr5']}")
-                st.write(f"Pixels ≥ 10 Gy: {roi_stats['thr10']}")
+                st.write(f"Non-zero pixels: {roi_stats['nonzero_pixels']} of {roi_stats['total_pixels']}")
+
+                st.write("Area above dose thresholds")
+                st.write(
+                    f"≥ 1 Gy: {roi_stats['thr1']} pixels | "
+                    f"{roi_stats['pct_roi_ge_1']:.1f}% of ROI | "
+                    f"{roi_stats['pct_nz_ge_1']:.1f}% of non-zero | "
+                    f"{roi_stats['sig_1gy']}"
+                )
+                st.write(
+                    f"≥ 2 Gy: {roi_stats['thr2']} pixels | "
+                    f"{roi_stats['pct_roi_ge_2']:.1f}% of ROI | "
+                    f"{roi_stats['pct_nz_ge_2']:.1f}% of non-zero | "
+                    f"{roi_stats['sig_2gy']}"
+                )
+                st.write(
+                    f"≥ 5 Gy: {roi_stats['thr5']} pixels | "
+                    f"{roi_stats['pct_roi_ge_5']:.1f}% of ROI | "
+                    f"{roi_stats['pct_nz_ge_5']:.1f}% of non-zero | "
+                    f"{roi_stats['sig_5gy']}"
+                )
+                st.write(f"≥ 10 Gy: {roi_stats['thr10']} pixels")
 
             if show_session_previews:
                 st.subheader("Reconstructed session previews")
@@ -597,7 +680,7 @@ if uploaded_files:
                         st.caption(f"Crop box: {bbox}")
                         session_display = masked_to_inclusion_roi(dose_map, inclusion_roi)
                         session_stats = compute_stats(dose_map, inclusion_roi)
-                        session_fig = render_interactive_map(
+                        session_fig, _ = render_interactive_map(
                             session_display,
                             title=f"{name} | ROI peak {session_stats['peak_dose']:.3f} Gy",
                             vmax=max(float(np.max(cumulative_dose)), 1.0),
@@ -614,6 +697,10 @@ if uploaded_files:
 
             if show_histogram:
                 st.subheader("Dose histogram inside ROI")
+                st.caption(
+                    "Significance labels use the percentage of non-zero ROI pixels above each threshold: "
+                    "<1% Not significant, 1–5% Borderline, 5–10% Significant, >10% Large significant region."
+                )
                 nz = roi_stats["stats_map"][roi_stats["stats_map"] > 0]
                 if nz.size > 0:
                     fig_hist, ax_hist = plt.subplots(figsize=(7, 4))
@@ -667,6 +754,5 @@ if uploaded_files:
                         mime="application/zip",
                         width="stretch",
                     )
-
 else:
     st.caption("Upload one or more OpenREM PNG images to begin.")
