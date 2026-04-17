@@ -252,7 +252,57 @@ def masked_to_inclusion_roi(arr, roi):
     return out
 
 
-def compute_stats(dose_map, roi=None):
+def largest_connected_component_size(mask, connectivity=8):
+    h, w = mask.shape
+    visited = np.zeros_like(mask, dtype=bool)
+    largest = 0
+
+    if connectivity == 8:
+        neighbors = [
+            (-1, -1), (-1, 0), (-1, 1),
+            (0, -1),            (0, 1),
+            (1, -1),  (1, 0),   (1, 1),
+        ]
+    else:
+        neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    for y in range(h):
+        for x in range(w):
+            if not mask[y, x] or visited[y, x]:
+                continue
+
+            stack = [(y, x)]
+            visited[y, x] = True
+            size = 0
+
+            while stack:
+                cy, cx = stack.pop()
+                size += 1
+
+                for dy, dx in neighbors:
+                    ny, nx = cy + dy, cx + dx
+                    if 0 <= ny < h and 0 <= nx < w:
+                        if mask[ny, nx] and not visited[ny, nx]:
+                            visited[ny, nx] = True
+                            stack.append((ny, nx))
+
+            largest = max(largest, size)
+
+    return int(largest)
+
+
+def cluster_label(largest_cluster, min_cluster=10):
+    if largest_cluster < min_cluster:
+        return "No meaningful cluster"
+    elif largest_cluster < 20:
+        return "Small meaningful cluster"
+    elif largest_cluster < 50:
+        return "Moderate meaningful cluster"
+    else:
+        return "Large meaningful cluster"
+
+
+def compute_stats(dose_map, roi=None, min_cluster=10):
     h, w = dose_map.shape
 
     if roi is None:
@@ -287,26 +337,10 @@ def compute_stats(dose_map, roi=None):
     thr5 = int(np.sum(stats_map >= 5.0))
     thr10 = int(np.sum(stats_map >= 10.0))
 
-    def pct(count, denom):
-        return (100.0 * count / denom) if denom > 0 else 0.0
-
-    pct_roi_ge_1 = pct(thr1, total_pixels)
-    pct_roi_ge_2 = pct(thr2, total_pixels)
-    pct_roi_ge_5 = pct(thr5, total_pixels)
-
-    pct_nz_ge_1 = pct(thr1, nonzero_pixels)
-    pct_nz_ge_2 = pct(thr2, nonzero_pixels)
-    pct_nz_ge_5 = pct(thr5, nonzero_pixels)
-
-    def significance_label(percent_nonzero):
-        if percent_nonzero < 1.0:
-            return "Not significant"
-        elif percent_nonzero < 5.0:
-            return "Borderline"
-        elif percent_nonzero < 10.0:
-            return "Significant"
-        else:
-            return "Large significant region"
+    cl1 = largest_connected_component_size(stats_map >= 1.0)
+    cl2 = largest_connected_component_size(stats_map >= 2.0)
+    cl5 = largest_connected_component_size(stats_map >= 5.0)
+    cl10 = largest_connected_component_size(stats_map >= 10.0)
 
     return {
         "roi": roi,
@@ -325,20 +359,23 @@ def compute_stats(dose_map, roi=None):
         "thr2": thr2,
         "thr5": thr5,
         "thr10": thr10,
-        "pct_roi_ge_1": pct_roi_ge_1,
-        "pct_roi_ge_2": pct_roi_ge_2,
-        "pct_roi_ge_5": pct_roi_ge_5,
-        "pct_nz_ge_1": pct_nz_ge_1,
-        "pct_nz_ge_2": pct_nz_ge_2,
-        "pct_nz_ge_5": pct_nz_ge_5,
-        "sig_1gy": significance_label(pct_nz_ge_1),
-        "sig_2gy": significance_label(pct_nz_ge_2),
-        "sig_5gy": significance_label(pct_nz_ge_5),
+        "cl1": cl1,
+        "cl2": cl2,
+        "cl5": cl5,
+        "cl10": cl10,
+        "flag1": cl1 >= min_cluster,
+        "flag2": cl2 >= min_cluster,
+        "flag5": cl5 >= min_cluster,
+        "flag10": cl10 >= min_cluster,
+        "label1": cluster_label(cl1, min_cluster=min_cluster),
+        "label2": cluster_label(cl2, min_cluster=min_cluster),
+        "label5": cluster_label(cl5, min_cluster=min_cluster),
+        "label10": cluster_label(cl10, min_cluster=min_cluster),
         "stats_map": stats_map,
     }
 
 
-def build_csv_bytes(session_rows, roi_stats):
+def build_csv_bytes(session_rows, roi_stats, min_cluster):
     lines = []
     lines.append("file,displayed_max_gy,crop_box,reconstructed_peak_gy,nonzero_pixels")
     for row in session_rows:
@@ -347,17 +384,23 @@ def build_csv_bytes(session_rows, roi_stats):
         )
 
     lines.append("")
+    lines.append(f"cluster_rule,largest_connected_component_must_be_at_least,{min_cluster},pixels")
+    lines.append("")
     lines.append(
-        "summary,roi,peak_dose_gy,peak_x,peak_y,mean_dose_gy,median_dose_gy,std_dose_gy,min_nonzero_dose_gy,p95_dose_gy,dose_sum,total_pixels,nonzero_pixels,pixels_ge_1gy,pixels_ge_2gy,pixels_ge_5gy,pixels_ge_10gy,pct_roi_ge_1gy,pct_roi_ge_2gy,pct_roi_ge_5gy,pct_nonzero_ge_1gy,pct_nonzero_ge_2gy,pct_nonzero_ge_5gy,sig_1gy,sig_2gy,sig_5gy"
+        "summary,roi,peak_dose_gy,peak_x,peak_y,mean_dose_gy,median_dose_gy,std_dose_gy,min_nonzero_dose_gy,p95_dose_gy,dose_sum,total_pixels,nonzero_pixels,"
+        "pixels_ge_1gy,largest_cluster_ge_1gy,meaningful_cluster_ge_1gy,label_ge_1gy,"
+        "pixels_ge_2gy,largest_cluster_ge_2gy,meaningful_cluster_ge_2gy,label_ge_2gy,"
+        "pixels_ge_5gy,largest_cluster_ge_5gy,meaningful_cluster_ge_5gy,label_ge_5gy,"
+        "pixels_ge_10gy,largest_cluster_ge_10gy,meaningful_cluster_ge_10gy,label_ge_10gy"
     )
     lines.append(
         f"roi,{roi_stats['roi']},{roi_stats['peak_dose']},{roi_stats['peak_x']},{roi_stats['peak_y']},"
         f"{roi_stats['mean_dose']},{roi_stats['median_dose']},{roi_stats['std_dose']},{roi_stats['min_nonzero_dose']},"
         f"{roi_stats['p95_dose']},{roi_stats['dose_sum']},{roi_stats['total_pixels']},{roi_stats['nonzero_pixels']},"
-        f"{roi_stats['thr1']},{roi_stats['thr2']},{roi_stats['thr5']},{roi_stats['thr10']},"
-        f"{roi_stats['pct_roi_ge_1']},{roi_stats['pct_roi_ge_2']},{roi_stats['pct_roi_ge_5']},"
-        f"{roi_stats['pct_nz_ge_1']},{roi_stats['pct_nz_ge_2']},{roi_stats['pct_nz_ge_5']},"
-        f"{roi_stats['sig_1gy']},{roi_stats['sig_2gy']},{roi_stats['sig_5gy']}"
+        f"{roi_stats['thr1']},{roi_stats['cl1']},{roi_stats['flag1']},{roi_stats['label1']},"
+        f"{roi_stats['thr2']},{roi_stats['cl2']},{roi_stats['flag2']},{roi_stats['label2']},"
+        f"{roi_stats['thr5']},{roi_stats['cl5']},{roi_stats['flag5']},{roi_stats['label5']},"
+        f"{roi_stats['thr10']},{roi_stats['cl10']},{roi_stats['flag10']},{roi_stats['label10']}"
     )
 
     return "\n".join(lines).encode("utf-8")
@@ -368,7 +411,6 @@ def roi_from_selection(selection_state, width, height):
         return None
 
     sel = selection_state.get("selection", selection_state)
-
     points = sel.get("points", []) if isinstance(sel, dict) else []
     if not points:
         return None
@@ -391,6 +433,60 @@ def roi_from_selection(selection_state, width, height):
     y1 = int(np.floor(min(ys)))
     y2 = int(np.ceil(max(ys))) + 1
     return clamp_roi((x1, y1, x2, y2), width, height)
+
+
+def view_window_controls(view_key, data_max, default_auto=True):
+    data_max = max(float(data_max), 1.0)
+
+    auto_key = f"{view_key}_auto_window"
+    level_key = f"{view_key}_level"
+    window_key = f"{view_key}_window"
+
+    if auto_key not in st.session_state:
+        st.session_state[auto_key] = default_auto
+    if level_key not in st.session_state:
+        st.session_state[level_key] = data_max / 2.0
+    if window_key not in st.session_state:
+        st.session_state[window_key] = data_max
+
+    c1, c2, c3 = st.columns([1, 1, 1])
+
+    with c1:
+        auto_window = st.checkbox("Auto WL/WW", key=auto_key)
+
+    if auto_window:
+        st.session_state[level_key] = data_max / 2.0
+        st.session_state[window_key] = data_max
+        level = st.session_state[level_key]
+        window = st.session_state[window_key]
+        vmin, vmax = 0.0, data_max
+        with c2:
+            st.caption(f"WL: {level:.3f} Gy")
+        with c3:
+            st.caption(f"WW: {window:.3f} Gy")
+    else:
+        with c2:
+            level = st.slider(
+                "WL (Gy)",
+                min_value=0.0,
+                max_value=float(data_max),
+                value=float(min(st.session_state[level_key], data_max)),
+                step=max(data_max / 500.0, 0.001),
+                key=level_key,
+            )
+        with c3:
+            window = st.slider(
+                "WW (Gy)",
+                min_value=max(data_max / 1000.0, 0.001),
+                max_value=float(data_max),
+                value=float(min(max(st.session_state[window_key], max(data_max / 1000.0, 0.001)), data_max)),
+                step=max(data_max / 500.0, 0.001),
+                key=window_key,
+            )
+        vmin, vmax = get_window_range(level, window, data_max=data_max)
+
+    st.caption(f"Display range: {vmin:.3f} to {vmax:.3f} Gy")
+    return vmin, vmax
 
 
 # =========================================================
@@ -452,6 +548,13 @@ if uploaded_files:
             index=2,
         )
 
+        min_cluster_pixels = st.number_input(
+            "Minimum connected cluster for meaningful exceedance (pixels)",
+            min_value=1,
+            value=10,
+            step=1,
+        )
+
         show_session_previews = st.checkbox("Show reconstructed session previews", value=False)
         show_histogram = st.checkbox("Show histogram for ROI", value=False)
         show_downloads = st.checkbox("Show downloads", value=True)
@@ -471,10 +574,12 @@ if uploaded_files:
                 crop_x2 = st.number_input("Crop x2", min_value=1, max_value=W, value=int(W * 0.80), step=1)
                 crop_y2 = st.number_input("Crop y2", min_value=1, max_value=H, value=int(H * 0.84), step=1)
             manual_vals = (int(crop_x1), int(crop_y1), int(crop_x2), int(crop_y2))
+
     if "crop_mode" not in locals():
         crop_mode = "Use full image"
         size_mode = "Pad to largest common size"
         manual_vals = None
+        min_cluster_pixels = 10
         show_session_previews = False
         show_histogram = False
         show_downloads = True
@@ -490,6 +595,7 @@ if uploaded_files:
         "crop_mode": crop_mode,
         "size_mode": size_mode,
         "manual_vals": manual_vals,
+        "min_cluster_pixels": int(min_cluster_pixels),
     }
 
     needs_rebuild = (
@@ -571,45 +677,6 @@ if uploaded_files:
         processed_maps = st.session_state.processed_maps
         session_rows = st.session_state.session_rows
 
-        st.subheader("Display settings")
-
-        display_max = float(np.max(cumulative_dose)) if cumulative_dose.size else 1.0
-        display_max = max(display_max, 1.0)
-
-        dc1, dc2, dc3 = st.columns([1, 1, 1])
-
-        with dc1:
-            auto_window = st.checkbox("Auto display range", value=True)
-
-        if auto_window:
-            disp_vmin = 0.0
-            disp_vmax = display_max
-            disp_level = display_max / 2.0
-            disp_window = display_max
-        else:
-            with dc2:
-                disp_level = st.number_input(
-                    "Level (Gy)",
-                    min_value=0.0,
-                    max_value=float(display_max),
-                    value=float(display_max / 2.0),
-                    step=0.1,
-                    format="%.3f",
-                )
-            with dc3:
-                disp_window = st.number_input(
-                    "Window (Gy)",
-                    min_value=0.001,
-                    max_value=float(display_max),
-                    value=float(display_max),
-                    step=0.1,
-                    format="%.3f",
-                )
-
-            disp_vmin, disp_vmax = get_window_range(disp_level, disp_window, data_max=display_max)
-
-        st.caption(f"Display range: {disp_vmin:.3f} to {disp_vmax:.3f} Gy")
-
         st.subheader("Inclusion ROI")
         st.caption(
             "Use box select on the cumulative map. The ROI stats and previews appear after a selection. "
@@ -620,14 +687,17 @@ if uploaded_files:
 
         current_peak = None
         if st.session_state.inclusion_roi is not None:
-            tmp_stats = compute_stats(cumulative_dose, st.session_state.inclusion_roi)
+            tmp_stats = compute_stats(cumulative_dose, st.session_state.inclusion_roi, min_cluster=min_cluster_pixels)
             current_peak = (tmp_stats["peak_x"], tmp_stats["peak_y"])
+
+        selector_max = max(float(np.max(cumulative_dose)), 1.0)
+        selector_vmin, selector_vmax = view_window_controls("selector_view", selector_max, default_auto=True)
 
         selector_fig, grid_step = render_interactive_map(
             cumulative_dose,
             title="Draw inclusion ROI with box select",
-            vmin=disp_vmin,
-            vmax=disp_vmax,
+            vmin=selector_vmin,
+            vmax=selector_vmax,
             inclusion_roi=st.session_state.inclusion_roi,
             peak_xy=current_peak,
             selectable=True,
@@ -670,17 +740,20 @@ if uploaded_files:
             st.info("No ROI selected yet. Draw a rectangle on the map with box select, or use the full-map button.")
         else:
             inclusion_roi = st.session_state.inclusion_roi
-            roi_stats = compute_stats(cumulative_dose, roi=inclusion_roi)
+            roi_stats = compute_stats(cumulative_dose, roi=inclusion_roi, min_cluster=min_cluster_pixels)
             display_map = masked_to_inclusion_roi(cumulative_dose, inclusion_roi)
 
             left, right = st.columns([1.4, 1])
 
             with left:
+                result_max = max(float(np.max(cumulative_dose)), 1.0)
+                result_vmin, result_vmax = view_window_controls("roi_result_view", result_max, default_auto=True)
+
                 result_fig, _ = render_interactive_map(
                     display_map,
                     title=f"Cumulative reconstructed dose | ROI peak {roi_stats['peak_dose']:.3f} Gy",
-                    vmin=disp_vmin,
-                    vmax=disp_vmax,
+                    vmin=result_vmin,
+                    vmax=result_vmax,
                     inclusion_roi=inclusion_roi,
                     peak_xy=(roi_stats["peak_x"], roi_stats["peak_y"]),
                     selectable=False,
@@ -697,6 +770,7 @@ if uploaded_files:
                 st.metric("ROI peak dose", f"{roi_stats['peak_dose']:.3f} Gy")
                 st.metric("ROI peak location", f"({roi_stats['peak_x']}, {roi_stats['peak_y']})")
                 st.caption("Coordinates are cursor-style X,Y positions.")
+                st.caption(f"Meaningful cluster rule: largest connected component ≥ {int(min_cluster_pixels)} pixels")
 
                 st.write("Inclusion ROI statistics")
                 st.write(f"Mean dose: {roi_stats['mean_dose']:.3f} Gy")
@@ -707,26 +781,31 @@ if uploaded_files:
                 st.write(f"Dose sum over ROI: {roi_stats['dose_sum']:.3f}")
                 st.write(f"Non-zero pixels: {roi_stats['nonzero_pixels']} of {roi_stats['total_pixels']}")
 
-                st.write("Area above dose thresholds")
+                st.write("Threshold extent by connected cluster")
                 st.write(
                     f"≥ 1 Gy: {roi_stats['thr1']} pixels | "
-                    f"{roi_stats['pct_roi_ge_1']:.1f}% of ROI | "
-                    f"{roi_stats['pct_nz_ge_1']:.1f}% of non-zero | "
-                    f"{roi_stats['sig_1gy']}"
+                    f"largest cluster {roi_stats['cl1']} px | "
+                    f"{roi_stats['label1']} | "
+                    f"{'YES' if roi_stats['flag1'] else 'NO'}"
                 )
                 st.write(
                     f"≥ 2 Gy: {roi_stats['thr2']} pixels | "
-                    f"{roi_stats['pct_roi_ge_2']:.1f}% of ROI | "
-                    f"{roi_stats['pct_nz_ge_2']:.1f}% of non-zero | "
-                    f"{roi_stats['sig_2gy']}"
+                    f"largest cluster {roi_stats['cl2']} px | "
+                    f"{roi_stats['label2']} | "
+                    f"{'YES' if roi_stats['flag2'] else 'NO'}"
                 )
                 st.write(
                     f"≥ 5 Gy: {roi_stats['thr5']} pixels | "
-                    f"{roi_stats['pct_roi_ge_5']:.1f}% of ROI | "
-                    f"{roi_stats['pct_nz_ge_5']:.1f}% of non-zero | "
-                    f"{roi_stats['sig_5gy']}"
+                    f"largest cluster {roi_stats['cl5']} px | "
+                    f"{roi_stats['label5']} | "
+                    f"{'YES' if roi_stats['flag5'] else 'NO'}"
                 )
-                st.write(f"≥ 10 Gy: {roi_stats['thr10']} pixels")
+                st.write(
+                    f"≥ 10 Gy: {roi_stats['thr10']} pixels | "
+                    f"largest cluster {roi_stats['cl10']} px | "
+                    f"{roi_stats['label10']} | "
+                    f"{'YES' if roi_stats['flag10'] else 'NO'}"
+                )
 
             if show_session_previews:
                 st.subheader("Reconstructed session previews")
@@ -735,13 +814,18 @@ if uploaded_files:
                     with preview_cols[i % 2]:
                         st.markdown(f"**{name}**")
                         st.caption(f"Crop box: {bbox}")
+
                         session_display = masked_to_inclusion_roi(dose_map, inclusion_roi)
-                        session_stats = compute_stats(dose_map, inclusion_roi)
+                        session_stats = compute_stats(dose_map, inclusion_roi, min_cluster=min_cluster_pixels)
+
+                        session_max = max(float(np.max(dose_map)), 1.0)
+                        session_vmin, session_vmax = view_window_controls(f"session_view_{i}", session_max, default_auto=True)
+
                         session_fig, _ = render_interactive_map(
                             session_display,
                             title=f"{name} | ROI peak {session_stats['peak_dose']:.3f} Gy",
-                            vmin=disp_vmin,
-                            vmax=disp_vmax,
+                            vmin=session_vmin,
+                            vmax=session_vmax,
                             inclusion_roi=inclusion_roi,
                             peak_xy=(session_stats["peak_x"], session_stats["peak_y"]),
                             selectable=False,
@@ -755,10 +839,6 @@ if uploaded_files:
 
             if show_histogram:
                 st.subheader("Dose histogram inside ROI")
-                st.caption(
-                    "Significance labels use the percentage of non-zero ROI pixels above each threshold: "
-                    "<1% Not significant, 1–5% Borderline, 5–10% Significant, >10% Large significant region."
-                )
                 nz = roi_stats["stats_map"][roi_stats["stats_map"] > 0]
                 if nz.size > 0:
                     fig_hist, ax_hist = plt.subplots(figsize=(7, 4))
@@ -777,13 +857,13 @@ if uploaded_files:
                 fig_cum = render_matplotlib_map(
                     display_map,
                     title=f"Cumulative reconstructed dose | ROI peak {roi_stats['peak_dose']:.3f} Gy",
-                    vmin=disp_vmin,
-                    vmax=disp_vmax,
+                    vmin=result_vmin,
+                    vmax=result_vmax,
                 )
                 cum_png = fig_to_png_bytes(fig_cum)
                 plt.close(fig_cum)
 
-                csv_bytes = build_csv_bytes(session_rows, roi_stats)
+                csv_bytes = build_csv_bytes(session_rows, roi_stats, int(min_cluster_pixels))
 
                 npy_buf = io.BytesIO()
                 np.save(npy_buf, cumulative_dose)
