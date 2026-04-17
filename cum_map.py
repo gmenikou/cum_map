@@ -50,6 +50,93 @@ def get_window_range(level, window, data_max=None):
     return vmin, vmax
 
 
+def init_window_state(view_key, data_max, default_auto=True):
+    data_max = max(float(data_max), 1.0)
+
+    auto_key = f"{view_key}_auto_window"
+    level_key = f"{view_key}_level"
+    window_key = f"{view_key}_window"
+
+    if auto_key not in st.session_state:
+        st.session_state[auto_key] = default_auto
+    if level_key not in st.session_state:
+        st.session_state[level_key] = data_max / 2.0
+    if window_key not in st.session_state:
+        st.session_state[window_key] = data_max
+
+
+def get_window_state(view_key, data_max):
+    data_max = max(float(data_max), 1.0)
+
+    auto_key = f"{view_key}_auto_window"
+    level_key = f"{view_key}_level"
+    window_key = f"{view_key}_window"
+
+    init_window_state(view_key, data_max)
+
+    auto_window = st.session_state[auto_key]
+    if auto_window:
+        level = data_max / 2.0
+        window = data_max
+        vmin, vmax = 0.0, data_max
+    else:
+        level = float(np.clip(st.session_state[level_key], 0.0, data_max))
+        min_window = max(data_max / 1000.0, 0.001)
+        window = float(np.clip(st.session_state[window_key], min_window, data_max))
+        vmin, vmax = get_window_range(level, window, data_max=data_max)
+
+    return vmin, vmax
+
+
+def render_window_controls(view_key, data_max):
+    data_max = max(float(data_max), 1.0)
+
+    auto_key = f"{view_key}_auto_window"
+    level_key = f"{view_key}_level"
+    window_key = f"{view_key}_window"
+
+    init_window_state(view_key, data_max)
+
+    c1, c2, c3 = st.columns([1, 1, 1])
+
+    with c1:
+        st.checkbox("Auto WL/WW", key=auto_key)
+
+    if st.session_state[auto_key]:
+        st.session_state[level_key] = data_max / 2.0
+        st.session_state[window_key] = data_max
+        with c2:
+            st.caption(f"WL: {st.session_state[level_key]:.3f} Gy")
+        with c3:
+            st.caption(f"WW: {st.session_state[window_key]:.3f} Gy")
+    else:
+        min_window = max(data_max / 1000.0, 0.001)
+        step = max(data_max / 500.0, 0.001)
+
+        st.session_state[level_key] = float(np.clip(st.session_state[level_key], 0.0, data_max))
+        st.session_state[window_key] = float(np.clip(st.session_state[window_key], min_window, data_max))
+
+        with c2:
+            st.slider(
+                "WL (Gy)",
+                min_value=0.0,
+                max_value=float(data_max),
+                step=step,
+                key=level_key,
+            )
+        with c3:
+            st.slider(
+                "WW (Gy)",
+                min_value=float(min_window),
+                max_value=float(data_max),
+                step=step,
+                key=window_key,
+            )
+
+    vmin, vmax = get_window_state(view_key, data_max)
+    st.caption(f"Display range: {vmin:.3f} to {vmax:.3f} Gy")
+
+
 def render_matplotlib_map(dose_map, title, vmin=None, vmax=None):
     fig, ax = plt.subplots(figsize=(7, 5))
 
@@ -291,6 +378,91 @@ def largest_connected_component_size(mask, connectivity=8):
     return int(largest)
 
 
+def get_largest_cluster_mask(mask, connectivity=8):
+    h, w = mask.shape
+    visited = np.zeros_like(mask, dtype=bool)
+    largest_component = []
+
+    if connectivity == 8:
+        neighbors = [
+            (-1, -1), (-1, 0), (-1, 1),
+            (0, -1),            (0, 1),
+            (1, -1),  (1, 0),   (1, 1),
+        ]
+    else:
+        neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    for y in range(h):
+        for x in range(w):
+            if not mask[y, x] or visited[y, x]:
+                continue
+
+            stack = [(y, x)]
+            visited[y, x] = True
+            component = []
+
+            while stack:
+                cy, cx = stack.pop()
+                component.append((cy, cx))
+
+                for dy, dx in neighbors:
+                    ny, nx = cy + dy, cx + dx
+                    if 0 <= ny < h and 0 <= nx < w:
+                        if mask[ny, nx] and not visited[ny, nx]:
+                            visited[ny, nx] = True
+                            stack.append((ny, nx))
+
+            if len(component) > len(largest_component):
+                largest_component = component
+
+    out = np.zeros_like(mask, dtype=bool)
+    for y, x in largest_component:
+        out[y, x] = True
+    return out
+
+
+def add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=10):
+    colors = {
+        1: "#00FFFF",   # cyan
+        2: "#00FF66",   # green
+        5: "#FFA500",   # orange
+        10: "#FF2D2D",  # red
+    }
+
+    for thr in thresholds:
+        mask = dose_map >= float(thr)
+        if not np.any(mask):
+            continue
+
+        largest_mask = get_largest_cluster_mask(mask)
+        largest_size = int(np.count_nonzero(largest_mask))
+        if largest_size < int(min_cluster):
+            continue
+
+        z = largest_mask.astype(float)
+
+        fig.add_trace(
+            go.Contour(
+                z=z,
+                contours=dict(
+                    start=0.5,
+                    end=0.5,
+                    size=1,
+                    coloring="none",
+                    showlabels=False,
+                ),
+                line=dict(
+                    color=colors.get(thr, "#FFFFFF"),
+                    width=1.5,
+                ),
+                showscale=False,
+                hoverinfo="skip",
+                name=f"{thr} Gy isocontour",
+                showlegend=False,
+            )
+        )
+
+
 def cluster_label(largest_cluster, min_cluster=10):
     if largest_cluster < min_cluster:
         return "No meaningful cluster"
@@ -435,60 +607,6 @@ def roi_from_selection(selection_state, width, height):
     return clamp_roi((x1, y1, x2, y2), width, height)
 
 
-def view_window_controls(view_key, data_max, default_auto=True):
-    data_max = max(float(data_max), 1.0)
-
-    auto_key = f"{view_key}_auto_window"
-    level_key = f"{view_key}_level"
-    window_key = f"{view_key}_window"
-
-    if auto_key not in st.session_state:
-        st.session_state[auto_key] = default_auto
-    if level_key not in st.session_state:
-        st.session_state[level_key] = data_max / 2.0
-    if window_key not in st.session_state:
-        st.session_state[window_key] = data_max
-
-    c1, c2, c3 = st.columns([1, 1, 1])
-
-    with c1:
-        auto_window = st.checkbox("Auto WL/WW", key=auto_key)
-
-    if auto_window:
-        st.session_state[level_key] = data_max / 2.0
-        st.session_state[window_key] = data_max
-        level = st.session_state[level_key]
-        window = st.session_state[window_key]
-        vmin, vmax = 0.0, data_max
-        with c2:
-            st.caption(f"WL: {level:.3f} Gy")
-        with c3:
-            st.caption(f"WW: {window:.3f} Gy")
-    else:
-        with c2:
-            level = st.slider(
-                "WL (Gy)",
-                min_value=0.0,
-                max_value=float(data_max),
-                value=float(min(st.session_state[level_key], data_max)),
-                step=max(data_max / 500.0, 0.001),
-                key=level_key,
-            )
-        with c3:
-            window = st.slider(
-                "WW (Gy)",
-                min_value=max(data_max / 1000.0, 0.001),
-                max_value=float(data_max),
-                value=float(min(max(st.session_state[window_key], max(data_max / 1000.0, 0.001)), data_max)),
-                step=max(data_max / 500.0, 0.001),
-                key=window_key,
-            )
-        vmin, vmax = get_window_range(level, window, data_max=data_max)
-
-    st.caption(f"Display range: {vmin:.3f} to {vmax:.3f} Gy")
-    return vmin, vmax
-
-
 # =========================================================
 # Session state
 # =========================================================
@@ -555,6 +673,7 @@ if uploaded_files:
             step=1,
         )
 
+        show_isocontours = st.checkbox("Show thin color-coded isocontours", value=True)
         show_session_previews = st.checkbox("Show reconstructed session previews", value=False)
         show_histogram = st.checkbox("Show histogram for ROI", value=False)
         show_downloads = st.checkbox("Show downloads", value=True)
@@ -578,18 +697,19 @@ if uploaded_files:
     if "crop_mode" not in locals():
         crop_mode = "Use full image"
         size_mode = "Pad to largest common size"
-        manual_vals = None
         min_cluster_pixels = 10
+        show_isocontours = True
         show_session_previews = False
         show_histogram = False
         show_downloads = True
+        manual_vals = None
 
     build_clicked = st.button("Build cumulative map", type="primary", width="stretch")
 
     current_signature = {
         "files": tuple((i, f.name, getattr(f, "size", None)) for i, f in enumerate(uploaded_files)),
         "displayed_max": tuple(
-            (f"{i}_{f.name}", float(displayed_max_inputs[f"{i}_{f.name}"]))
+            (f"{i}_{f.name}", float(displayed_max_inputs[f'{i}_{f.name}']))
             for i, f in enumerate(uploaded_files)
         ),
         "crop_mode": crop_mode,
@@ -691,7 +811,7 @@ if uploaded_files:
             current_peak = (tmp_stats["peak_x"], tmp_stats["peak_y"])
 
         selector_max = max(float(np.max(cumulative_dose)), 1.0)
-        selector_vmin, selector_vmax = view_window_controls("selector_view", selector_max, default_auto=True)
+        selector_vmin, selector_vmax = get_window_state("selector_view", selector_max)
 
         selector_fig, grid_step = render_interactive_map(
             cumulative_dose,
@@ -702,6 +822,8 @@ if uploaded_files:
             peak_xy=current_peak,
             selectable=True,
         )
+        if show_isocontours:
+            add_isocontours(selector_fig, cumulative_dose, thresholds=(1, 2, 5, 10), min_cluster=min_cluster_pixels)
 
         selection_event = st.plotly_chart(
             selector_fig,
@@ -719,6 +841,8 @@ if uploaded_files:
             },
             key="roi_selector_chart",
         )
+
+        render_window_controls("selector_view", selector_max)
 
         new_roi = roi_from_selection(selection_event, map_w, map_h)
         if new_roi is not None:
@@ -747,7 +871,7 @@ if uploaded_files:
 
             with left:
                 result_max = max(float(np.max(cumulative_dose)), 1.0)
-                result_vmin, result_vmax = view_window_controls("roi_result_view", result_max, default_auto=True)
+                result_vmin, result_vmax = get_window_state("roi_result_view", result_max)
 
                 result_fig, _ = render_interactive_map(
                     display_map,
@@ -758,12 +882,17 @@ if uploaded_files:
                     peak_xy=(roi_stats["peak_x"], roi_stats["peak_y"]),
                     selectable=False,
                 )
+                if show_isocontours:
+                    add_isocontours(result_fig, display_map, thresholds=(1, 2, 5, 10), min_cluster=min_cluster_pixels)
+
                 st.plotly_chart(
                     result_fig,
                     width="stretch",
                     config={"displaylogo": False},
                     key="roi_result_chart",
                 )
+
+                render_window_controls("roi_result_view", result_max)
 
             with right:
                 st.metric("Number of sessions", len(processed_maps))
@@ -819,7 +948,7 @@ if uploaded_files:
                         session_stats = compute_stats(dose_map, inclusion_roi, min_cluster=min_cluster_pixels)
 
                         session_max = max(float(np.max(dose_map)), 1.0)
-                        session_vmin, session_vmax = view_window_controls(f"session_view_{i}", session_max, default_auto=True)
+                        session_vmin, session_vmax = get_window_state(f"session_view_{i}", session_max)
 
                         session_fig, _ = render_interactive_map(
                             session_display,
@@ -830,12 +959,17 @@ if uploaded_files:
                             peak_xy=(session_stats["peak_x"], session_stats["peak_y"]),
                             selectable=False,
                         )
+                        if show_isocontours:
+                            add_isocontours(session_fig, session_display, thresholds=(1, 2, 5, 10), min_cluster=min_cluster_pixels)
+
                         st.plotly_chart(
                             session_fig,
                             width="stretch",
                             config={"displaylogo": False},
                             key=f"session_chart_{i}",
                         )
+
+                        render_window_controls(f"session_view_{i}", session_max)
 
             if show_histogram:
                 st.subheader("Dose histogram inside ROI")
