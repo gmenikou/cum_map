@@ -203,7 +203,6 @@ def auto_find_map_bbox(gray):
 def reconstruct_displayed_dose(gray_crop, displayed_max_dose):
     arr = gray_crop.astype(np.float32)
     dose = (1.0 - arr / 255.0) * float(displayed_max_dose)
-    dose[arr >= 245] = 0.0
     dose = np.clip(dose, 0.0, None)
     return dose
 
