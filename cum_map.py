@@ -200,10 +200,10 @@ def auto_find_map_bbox(gray):
     return x1, y1, x2, y2
 
 
-def reconstruct_displayed_dose(gray_crop, displayed_max_dose, mask_threshold=245):
+def reconstruct_displayed_dose(gray_crop, displayed_max_dose):
     arr = gray_crop.astype(np.float32)
     dose = (1.0 - arr / 255.0) * float(displayed_max_dose)
-    dose[arr >= mask_threshold] = 0.0
+    dose[arr >= 245] = 0.0
     dose = np.clip(dose, 0.0, None)
     return dose
 
@@ -413,7 +413,7 @@ if uploaded_files:
         crop_mode = st.selectbox(
             "Map panel crop",
             ["Auto-detect map panel", "Use full image", "Manual crop for all images"],
-            index=0,
+            index=1,
         )
 
         size_mode = st.selectbox(
@@ -423,15 +423,7 @@ if uploaded_files:
                 "Crop to smallest common size",
                 "Pad to largest common size",
             ],
-            index=1,
-        )
-
-        mask_threshold = st.slider(
-            "Background threshold",
-            min_value=220,
-            max_value=255,
-            value=245,
-            step=1,
+            index=2,
         )
 
         show_session_previews = st.checkbox("Show reconstructed session previews", value=False)
@@ -454,9 +446,8 @@ if uploaded_files:
                 crop_y2 = st.number_input("Crop y2", min_value=1, max_value=H, value=int(H * 0.84), step=1)
             manual_vals = (int(crop_x1), int(crop_y1), int(crop_x2), int(crop_y2))
     if "crop_mode" not in locals():
-        crop_mode = "Auto-detect map panel"
-        size_mode = "Crop to smallest common size"
-        mask_threshold = 245
+        crop_mode = "Use full image"
+        size_mode = "Pad to largest common size"
         manual_vals = None
         show_session_previews = False
         show_histogram = False
@@ -465,14 +456,13 @@ if uploaded_files:
     build_clicked = st.button("Build cumulative map", type="primary", width="stretch")
 
     current_signature = {
-        "files": tuple((i, f.name, len(f.getvalue())) for i, f in enumerate(uploaded_files)),
+        "files": tuple((i, f.name, getattr(f, "size", None)) for i, f in enumerate(uploaded_files)),
         "displayed_max": tuple(
             (f"{i}_{f.name}", float(displayed_max_inputs[f"{i}_{f.name}"]))
             for i, f in enumerate(uploaded_files)
         ),
         "crop_mode": crop_mode,
         "size_mode": size_mode,
-        "mask_threshold": mask_threshold,
         "manual_vals": manual_vals,
     }
 
@@ -502,7 +492,7 @@ if uploaded_files:
                     x1, y1, x2, y2 = manual_vals
 
                 crop = gray[y1:y2, x1:x2]
-                dose_map = reconstruct_displayed_dose(crop, displayed_max_dose=displayed_max, mask_threshold=mask_threshold)
+                dose_map = reconstruct_displayed_dose(crop, displayed_max_dose=displayed_max)
 
                 reconstructed.append((file.name, dose_map, displayed_max, (x1, y1, x2, y2)))
 
