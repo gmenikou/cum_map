@@ -33,10 +33,32 @@ def fig_to_png_bytes(fig):
     return buf.getvalue()
 
 
-def render_matplotlib_map(dose_map, title, vmax=None):
+def get_window_range(level, window, data_max=None):
+    window = max(float(window), 1e-6)
+    level = float(level)
+
+    vmin = level - window / 2.0
+    vmax = level + window / 2.0
+
+    vmin = max(0.0, vmin)
+    if data_max is not None:
+        vmax = min(float(data_max), vmax)
+
+    if vmax <= vmin:
+        vmax = vmin + 1e-6
+
+    return vmin, vmax
+
+
+def render_matplotlib_map(dose_map, title, vmin=None, vmax=None):
     fig, ax = plt.subplots(figsize=(7, 5))
-    use_vmax = vmax if vmax is not None and vmax > 0 else max(float(np.max(dose_map)), 1e-6)
-    im = ax.imshow(dose_map, cmap="jet", vmin=0, vmax=use_vmax)
+
+    if vmin is None:
+        vmin = 0.0
+    if vmax is None or vmax <= vmin:
+        vmax = max(float(np.max(dose_map)), vmin + 1e-6)
+
+    im = ax.imshow(dose_map, cmap="jet", vmin=vmin, vmax=vmax)
     ax.set_title(title)
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
@@ -64,12 +86,17 @@ def build_selectable_grid(width, height, step=None):
 def render_interactive_map(
     dose_map,
     title,
+    vmin=None,
     vmax=None,
     inclusion_roi=None,
     peak_xy=None,
     selectable=True,
 ):
-    use_vmax = vmax if vmax is not None and vmax > 0 else max(float(np.max(dose_map)), 1e-6)
+    if vmin is None:
+        vmin = 0.0
+    if vmax is None or vmax <= vmin:
+        vmax = max(float(np.max(dose_map)), vmin + 1e-6)
+
     h, w = dose_map.shape
 
     fig = go.Figure()
@@ -78,8 +105,8 @@ def render_interactive_map(
         go.Heatmap(
             z=dose_map,
             colorscale="Jet",
-            zmin=0,
-            zmax=use_vmax,
+            zmin=vmin,
+            zmax=vmax,
             colorbar=dict(title="Dose (Gy)"),
             hovertemplate="X: %{x}<br>Y: %{y}<br>Dose: %{z:.3f} Gy<extra></extra>",
         )
@@ -544,6 +571,45 @@ if uploaded_files:
         processed_maps = st.session_state.processed_maps
         session_rows = st.session_state.session_rows
 
+        st.subheader("Display settings")
+
+        display_max = float(np.max(cumulative_dose)) if cumulative_dose.size else 1.0
+        display_max = max(display_max, 1.0)
+
+        dc1, dc2, dc3 = st.columns([1, 1, 1])
+
+        with dc1:
+            auto_window = st.checkbox("Auto display range", value=True)
+
+        if auto_window:
+            disp_vmin = 0.0
+            disp_vmax = display_max
+            disp_level = display_max / 2.0
+            disp_window = display_max
+        else:
+            with dc2:
+                disp_level = st.number_input(
+                    "Level (Gy)",
+                    min_value=0.0,
+                    max_value=float(display_max),
+                    value=float(display_max / 2.0),
+                    step=0.1,
+                    format="%.3f",
+                )
+            with dc3:
+                disp_window = st.number_input(
+                    "Window (Gy)",
+                    min_value=0.001,
+                    max_value=float(display_max),
+                    value=float(display_max),
+                    step=0.1,
+                    format="%.3f",
+                )
+
+            disp_vmin, disp_vmax = get_window_range(disp_level, disp_window, data_max=display_max)
+
+        st.caption(f"Display range: {disp_vmin:.3f} to {disp_vmax:.3f} Gy")
+
         st.subheader("Inclusion ROI")
         st.caption(
             "Use box select on the cumulative map. The ROI stats and previews appear after a selection. "
@@ -560,7 +626,8 @@ if uploaded_files:
         selector_fig, grid_step = render_interactive_map(
             cumulative_dose,
             title="Draw inclusion ROI with box select",
-            vmax=max(float(np.max(cumulative_dose)), 1.0),
+            vmin=disp_vmin,
+            vmax=disp_vmax,
             inclusion_roi=st.session_state.inclusion_roi,
             peak_xy=current_peak,
             selectable=True,
@@ -612,7 +679,8 @@ if uploaded_files:
                 result_fig, _ = render_interactive_map(
                     display_map,
                     title=f"Cumulative reconstructed dose | ROI peak {roi_stats['peak_dose']:.3f} Gy",
-                    vmax=max(float(np.max(cumulative_dose)), 1.0),
+                    vmin=disp_vmin,
+                    vmax=disp_vmax,
                     inclusion_roi=inclusion_roi,
                     peak_xy=(roi_stats["peak_x"], roi_stats["peak_y"]),
                     selectable=False,
@@ -672,7 +740,8 @@ if uploaded_files:
                         session_fig, _ = render_interactive_map(
                             session_display,
                             title=f"{name} | ROI peak {session_stats['peak_dose']:.3f} Gy",
-                            vmax=max(float(np.max(cumulative_dose)), 1.0),
+                            vmin=disp_vmin,
+                            vmax=disp_vmax,
                             inclusion_roi=inclusion_roi,
                             peak_xy=(session_stats["peak_x"], session_stats["peak_y"]),
                             selectable=False,
@@ -708,7 +777,8 @@ if uploaded_files:
                 fig_cum = render_matplotlib_map(
                     display_map,
                     title=f"Cumulative reconstructed dose | ROI peak {roi_stats['peak_dose']:.3f} Gy",
-                    vmax=max(float(np.max(cumulative_dose)), 1.0),
+                    vmin=disp_vmin,
+                    vmax=disp_vmax,
                 )
                 cum_png = fig_to_png_bytes(fig_cum)
                 plt.close(fig_cum)
