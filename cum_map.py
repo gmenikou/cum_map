@@ -23,9 +23,6 @@ st.warning(
 )
 
 
-# =========================================================
-# Helpers
-# =========================================================
 def fig_to_png_bytes(fig):
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=200, bbox_inches="tight")
@@ -339,6 +336,7 @@ def get_largest_cluster_mask(mask, connectivity=8):
         out[y, x] = True
     return out
 
+
 def add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=10):
     colors = {
         1: "#FF00FF",
@@ -392,12 +390,13 @@ def add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=10):
                 x=segments_x,
                 y=segments_y,
                 mode="lines",
-                line=dict(color=colors.get(thr, "#FFFFFF"), width=3),
+                line=dict(color=colors.get(thr, "#FFFFFF"), width=5),
                 hoverinfo="none",
                 hovertemplate=None,
                 showlegend=False,
             )
         )
+
 
 def cluster_label(largest_cluster, min_cluster=10):
     if largest_cluster < min_cluster:
@@ -660,20 +659,42 @@ def make_contour_figure(dose_map, title, vmin, vmax, inclusion_roi=None, min_clu
 
     add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=min_cluster)
 
+    colors = {
+        1: "#FF00FF",
+        2: "#00FF66",
+        5: "#FFA500",
+        10: "#FF2D2D",
+    }
+
+    for thr, col in colors.items():
+        fig.add_trace(
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="lines",
+                line=dict(color=col, width=4),
+                name=f"≥ {thr} Gy",
+                showlegend=True,
+            )
+        )
+
     fig.update_layout(
         title=title,
         margin=dict(l=10, r=10, t=40, b=10),
         xaxis_title="X",
         yaxis_title="Y",
+        legend=dict(
+            title="Isocontours",
+            x=1.02,
+            y=1,
+            bgcolor="rgba(0,0,0,0)",
+        ),
     )
     fig.update_yaxes(autorange="reversed", scaleanchor="x", scaleratio=1)
 
     return fig
 
 
-# =========================================================
-# Session state
-# =========================================================
 if "reconstruction_signature" not in st.session_state:
     st.session_state.reconstruction_signature = None
 if "cumulative_dose" not in st.session_state:
@@ -688,9 +709,6 @@ if "roi_edit_mode" not in st.session_state:
     st.session_state.roi_edit_mode = True
 
 
-# =========================================================
-# Main UI
-# =========================================================
 uploaded_files = st.file_uploader(
     "Upload OpenREM PNG images",
     type=["png"],
@@ -1004,6 +1022,7 @@ if uploaded_files:
                         config={"displaylogo": False},
                         key="contour_chart",
                     )
+                    st.caption("Contour lines show connected regions exceeding dose thresholds (largest cluster only).")
 
             with right:
                 st.metric("Number of sessions", len(processed_maps))
