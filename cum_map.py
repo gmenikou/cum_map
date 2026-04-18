@@ -23,6 +23,9 @@ st.warning(
 )
 
 
+# =========================================================
+# Helpers
+# =========================================================
 def fig_to_png_bytes(fig):
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=200, bbox_inches="tight")
@@ -554,7 +557,7 @@ def make_edit_figure(dose_map, title, vmin, vmax):
     return fig, step
 
 
-def make_hover_figure(dose_map, title, vmin, vmax, inclusion_roi=None, peak_xy=None, show_isocontours=False, min_cluster=10):
+def make_clean_hover_figure(dose_map, title, vmin, vmax, inclusion_roi=None):
     fig = go.Figure()
 
     fig.add_trace(
@@ -568,9 +571,6 @@ def make_hover_figure(dose_map, title, vmin, vmax, inclusion_roi=None, peak_xy=N
             hovertemplate="X: %{x}<br>Y: %{y}<br>Dose: %{z:.3f} Gy<extra></extra>",
         )
     )
-
-    if show_isocontours:
-        add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=min_cluster)
 
     if inclusion_roi is not None:
         x1, y1, x2, y2 = inclusion_roi
@@ -591,21 +591,6 @@ def make_hover_figure(dose_map, title, vmin, vmax, inclusion_roi=None, peak_xy=N
             bgcolor="rgba(0,0,0,0.45)"
         )
 
-    if peak_xy is not None:
-        fig.add_trace(
-            go.Scatter(
-                x=[peak_xy[0]],
-                y=[peak_xy[1]],
-                mode="markers+text",
-                text=["Peak"],
-                textposition="top center",
-                marker=dict(size=10, symbol="x", color="white"),
-                hoverinfo="none",
-                hovertemplate=None,
-                showlegend=False,
-            )
-        )
-
     fig.update_layout(
         title=title,
         margin=dict(l=10, r=10, t=40, b=10),
@@ -615,9 +600,13 @@ def make_hover_figure(dose_map, title, vmin, vmax, inclusion_roi=None, peak_xy=N
         hovermode="closest",
     )
     fig.update_yaxes(autorange="reversed", scaleanchor="x", scaleratio=1)
+
     return fig
 
 
+# =========================================================
+# Session state
+# =========================================================
 if "reconstruction_signature" not in st.session_state:
     st.session_state.reconstruction_signature = None
 if "cumulative_dose" not in st.session_state:
@@ -632,6 +621,9 @@ if "roi_edit_mode" not in st.session_state:
     st.session_state.roi_edit_mode = True
 
 
+# =========================================================
+# Main UI
+# =========================================================
 uploaded_files = st.file_uploader(
     "Upload OpenREM PNG images",
     type=["png"],
@@ -864,20 +856,12 @@ if uploaded_files:
             if st.session_state.inclusion_roi is None:
                 st.info("Draw a rectangle on the map.")
         else:
-            current_peak = None
-            if st.session_state.inclusion_roi is not None:
-                tmp_stats = compute_stats(cumulative_dose, st.session_state.inclusion_roi, min_cluster=min_cluster_pixels)
-                current_peak = (tmp_stats["peak_x"], tmp_stats["peak_y"])
-
-            hover_fig = make_hover_figure(
+            hover_fig = make_clean_hover_figure(
                 cumulative_dose,
                 "Hover view: cumulative map with ROI",
                 selector_vmin,
                 selector_vmax,
                 inclusion_roi=st.session_state.inclusion_roi,
-                peak_xy=current_peak,
-                show_isocontours=show_isocontours,
-                min_cluster=min_cluster_pixels,
             )
 
             st.plotly_chart(
@@ -887,6 +871,8 @@ if uploaded_files:
                     "modeBarButtonsToRemove": [
                         "select2d",
                         "lasso2d",
+                        "zoom2d",
+                        "autoScale2d",
                     ],
                     "displaylogo": False,
                 },
@@ -908,15 +894,12 @@ if uploaded_files:
                 result_max = max(float(np.max(cumulative_dose)), 1.0)
                 result_vmin, result_vmax = get_window_state("roi_result_view", result_max)
 
-                result_fig = make_hover_figure(
+                result_fig = make_clean_hover_figure(
                     display_map,
                     f"Cumulative reconstructed dose | ROI peak {roi_stats['peak_dose']:.3f} Gy",
                     result_vmin,
                     result_vmax,
                     inclusion_roi=inclusion_roi,
-                    peak_xy=(roi_stats["peak_x"], roi_stats["peak_y"]),
-                    show_isocontours=show_isocontours,
-                    min_cluster=min_cluster_pixels,
                 )
 
                 st.plotly_chart(
@@ -926,10 +909,12 @@ if uploaded_files:
                         "modeBarButtonsToRemove": [
                             "select2d",
                             "lasso2d",
+                            "zoom2d",
+                            "autoScale2d",
                         ],
                         "displaylogo": False,
                     },
-                    key="roi_result_chart",
+                    key="roi_result_chart_clean",
                 )
 
                 render_window_controls("roi_result_view", result_max)
@@ -990,15 +975,12 @@ if uploaded_files:
                         session_max = max(float(np.max(dose_map)), 1.0)
                         session_vmin, session_vmax = get_window_state(f"session_view_{i}", session_max)
 
-                        session_fig = make_hover_figure(
+                        session_fig = make_clean_hover_figure(
                             session_display,
                             f"{name} | ROI peak {session_stats['peak_dose']:.3f} Gy",
                             session_vmin,
                             session_vmax,
                             inclusion_roi=inclusion_roi,
-                            peak_xy=(session_stats["peak_x"], session_stats["peak_y"]),
-                            show_isocontours=show_isocontours,
-                            min_cluster=min_cluster_pixels,
                         )
 
                         st.plotly_chart(
@@ -1008,6 +990,8 @@ if uploaded_files:
                                 "modeBarButtonsToRemove": [
                                     "select2d",
                                     "lasso2d",
+                                    "zoom2d",
+                                    "autoScale2d",
                                 ],
                                 "displaylogo": False,
                             },
@@ -1032,6 +1016,20 @@ if uploaded_files:
 
             if show_downloads:
                 st.subheader("Downloads")
+
+                export_fig = go.Figure()
+                export_fig.add_trace(
+                    go.Heatmap(
+                        z=display_map,
+                        colorscale="Jet",
+                        zmin=result_vmin,
+                        zmax=result_vmax,
+                        colorbar=dict(title="Dose (Gy)"),
+                        hoverinfo="skip",
+                    )
+                )
+                if show_isocontours:
+                    add_isocontours(export_fig, display_map, thresholds=(1, 2, 5, 10), min_cluster=min_cluster_pixels)
 
                 fig_cum = render_matplotlib_map(
                     display_map,
