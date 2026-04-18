@@ -677,19 +677,23 @@ def make_contour_figure(dose_map, title, vmin, vmax, inclusion_roi=None, min_clu
                 showlegend=True,
             )
         )
-
     fig.update_layout(
         title=title,
-        margin=dict(l=10, r=10, t=40, b=10),
+        margin=dict(l=10, r=180, t=40, b=10),
         xaxis_title="X",
         yaxis_title="Y",
         legend=dict(
             title="Isocontours",
-            x=1.02,
+            x=1.18,
             y=1,
-            bgcolor="rgba(0,0,0,0)",
-        ),
-    )
+            xanchor="left",
+            yanchor="top",
+            bgcolor="rgba(255,255,255,0.75)",
+            bordercolor="rgba(0,0,0,0.15)",
+            borderwidth=1,
+       ),
+   )
+    
     fig.update_yaxes(autorange="reversed", scaleanchor="x", scaleratio=1)
 
     return fig
