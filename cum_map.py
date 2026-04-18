@@ -392,7 +392,7 @@ def add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=10):
                 x=segments_x,
                 y=segments_y,
                 mode="lines",
-                line=dict(color=colors.get(thr, "#FFFFFF"), width=5),
+                line=dict(color=colors.get(thr, "#FFFFFF"), width=3),
                 hoverinfo="none",
                 hovertemplate=None,
                 showlegend=False,
