@@ -339,8 +339,8 @@ def get_component_sizes(mask, connectivity=8):
     return [int(np.sum(c)) for c in clusters]
 
 
-def estimate_dynamic_cluster_rules_from_cumulative(
-    cumulative_dose,
+def estimate_dynamic_cluster_rules_from_roi_map(
+    roi_masked_cumulative_map,
     thresholds=(1.0, 2.0, 5.0, 10.0),
     connectivity=8,
     lower_portion_percentile=60,
@@ -349,7 +349,7 @@ def estimate_dynamic_cluster_rules_from_cumulative(
     rules = {}
 
     for thr in thresholds:
-        mask = cumulative_dose >= float(thr)
+        mask = roi_masked_cumulative_map >= float(thr)
         sizes = get_component_sizes(mask, connectivity=connectivity)
 
         if not sizes:
@@ -534,7 +534,7 @@ def build_csv_bytes(session_rows, roi_stats, cluster_rules):
         )
 
     lines.append("")
-    lines.append("adaptive_cluster_rule,derived_from,cumulative_map_small_component_distribution")
+    lines.append("adaptive_cluster_rule,derived_from,roi_masked_cumulative_map_unique_sizes")
     lines.append("dose_threshold_gy,min_connected_pixels")
     for thr in [1.0, 2.0, 5.0, 10.0]:
         lines.append(f"{thr},{int(cluster_rules.get(thr, 0))}")
@@ -825,12 +825,12 @@ if uploaded_files:
         fallback_min_cluster_pixels = st.number_input(
             "Fallback minimum connected cluster (pixels)",
             min_value=1,
-            value=4,
+            value=10,
             step=1,
         )
 
         adaptive_lower_portion_percentile = st.slider(
-            "Adaptive rule: lower portion of component sizes (%)",
+            "Adaptive rule: lower portion of unique cluster sizes (%)",
             min_value=20,
             max_value=90,
             value=60,
@@ -861,7 +861,7 @@ if uploaded_files:
     if "crop_mode" not in locals():
         crop_mode = "Use full image"
         size_mode = "Pad to largest common size"
-        fallback_min_cluster_pixels = 4
+        fallback_min_cluster_pixels = 10
         adaptive_lower_portion_percentile = 60
         show_isocontours = True
         show_session_previews = False
@@ -948,6 +948,10 @@ if uploaded_files:
                 processed_maps.append((name, dose_proc, displayed_max, bbox))
 
             cumulative_dose = np.sum([m[1] for m in processed_maps], axis=0)
+
+            st.session_state.cumulative_dose = cumulative_dose
+            st.session_state.processed_maps = processed_maps
+            st.session_state.session_rows = session_rows
             st.session_state.reconstruction_signature = current_signature
             st.session_state.inclusion_roi = None
             st.session_state.roi_edit_mode = True
@@ -985,7 +989,7 @@ if uploaded_files:
         if st.session_state.roi_edit_mode:
             edit_fig, grid_step = make_edit_figure(
                 cumulative_dose,
-                "ROI edit mode: draw box selection",
+                "ROI edit mode: draw box selection on full cumulative map",
                 selector_vmin,
                 selector_vmax,
             )
@@ -1017,11 +1021,11 @@ if uploaded_files:
                 st.rerun()
 
             if st.session_state.inclusion_roi is None:
-                st.info("Draw a rectangle on the map.")
+                st.info("Draw a rectangle on the full cumulative map.")
         else:
             hover_fig = make_clean_hover_figure(
                 cumulative_dose,
-                "Hover view: cumulative map with ROI",
+                "Hover view: full cumulative map with ROI",
                 selector_vmin,
                 selector_vmax,
                 inclusion_roi=st.session_state.inclusion_roi,
@@ -1048,21 +1052,25 @@ if uploaded_files:
             st.info("No ROI selected yet.")
         else:
             inclusion_roi = st.session_state.inclusion_roi
+
             roi_map_for_rules = masked_to_inclusion_roi(cumulative_dose, inclusion_roi)
-            dynamic_cluster_rules = estimate_dynamic_cluster_rules_from_cumulative(
+
+            dynamic_cluster_rules = estimate_dynamic_cluster_rules_from_roi_map(
                 roi_map_for_rules,
                 thresholds=(1.0, 2.0, 5.0, 10.0),
                 connectivity=8,
                 lower_portion_percentile=adaptive_lower_portion_percentile,
                 floor_px=fallback_min_cluster_pixels,
             )
+
             roi_stats = compute_stats(
                 cumulative_dose,
                 roi=inclusion_roi,
                 cluster_rules=dynamic_cluster_rules,
                 default_min_cluster=fallback_min_cluster_pixels,
             )
-            display_map = cumulative_dose
+
+            full_display_map = cumulative_dose
             roi_display_map = masked_to_inclusion_roi(cumulative_dose, inclusion_roi)
 
             left, right = st.columns([1.4, 1])
@@ -1072,8 +1080,8 @@ if uploaded_files:
                 result_vmin, result_vmax = get_window_state("roi_result_view", result_max)
 
                 result_fig = make_clean_hover_figure(
-                    display_map,
-                    f"Cumulative reconstructed dose | ROI peak {roi_stats['peak_dose']:.3f} Gy",
+                    full_display_map,
+                    f"Full cumulative reconstructed dose | ROI peak {roi_stats['peak_dose']:.3f} Gy",
                     result_vmin,
                     result_vmax,
                     inclusion_roi=inclusion_roi,
@@ -1097,11 +1105,10 @@ if uploaded_files:
                 render_window_controls("roi_result_view", result_max)
 
                 if show_isocontours:
-                    st.subheader("Isocontour view (visual only)")
-
+                    st.subheader("Isocontour view (ROI rule applied)")
                     contour_fig = make_contour_figure(
                         roi_display_map,
-                        "Cumulative dose with isocontours",
+                        "ROI-masked cumulative dose with isocontours",
                         result_vmin,
                         result_vmax,
                         inclusion_roi=inclusion_roi,
@@ -1115,7 +1122,7 @@ if uploaded_files:
                         config={"displaylogo": False},
                         key="contour_chart",
                     )
-                    st.caption("Contour lines show connected regions meeting each fixed dose threshold and its adaptive connected-pixel rule.")
+                    st.caption("Contours are drawn from the ROI-masked cumulative map using ROI-derived unique-size cluster rules.")
 
             with right:
                 st.metric("Number of sessions", len(processed_maps))
@@ -1123,7 +1130,7 @@ if uploaded_files:
                 st.metric("ROI peak location", f"({roi_stats['peak_x']}, {roi_stats['peak_y']})")
                 st.caption("Coordinates are cursor-style X,Y positions.")
 
-                st.write("Adaptive contour pixel thresholds (unique-size rule)")
+                st.write("Adaptive contour pixel thresholds (ROI unique-size rule)")
                 st.write(f"≥ 1 Gy: {roi_stats['min1']} px")
                 st.write(f"≥ 2 Gy: {roi_stats['min2']} px")
                 st.write(f"≥ 5 Gy: {roi_stats['min5']} px")
@@ -1188,8 +1195,8 @@ if uploaded_files:
                         session_vmin, session_vmax = get_window_state(f"session_view_{i}", session_max)
 
                         session_fig = make_clean_hover_figure(
-                            session_display,
-                            f"{name} | ROI peak {session_stats['peak_dose']:.3f} Gy",
+                            dose_map,
+                            f"{name} | Full session map | ROI peak {session_stats['peak_dose']:.3f} Gy",
                             session_vmin,
                             session_vmax,
                             inclusion_roi=inclusion_roi,
@@ -1215,7 +1222,7 @@ if uploaded_files:
                         if show_isocontours:
                             session_contour_fig = make_contour_figure(
                                 session_display,
-                                f"{name} | Isocontours",
+                                f"{name} | ROI-masked isocontours",
                                 session_vmin,
                                 session_vmax,
                                 inclusion_roi=inclusion_roi,
@@ -1248,7 +1255,7 @@ if uploaded_files:
 
                 fig_cum = render_matplotlib_map(
                     roi_display_map,
-                    title=f"Cumulative reconstructed dose | ROI peak {roi_stats['peak_dose']:.3f} Gy",
+                    title=f"ROI-masked cumulative reconstructed dose | ROI peak {roi_stats['peak_dose']:.3f} Gy",
                     vmin=result_vmin,
                     vmax=result_vmax,
                     show_contours=show_isocontours,
