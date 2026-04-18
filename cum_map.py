@@ -135,7 +135,7 @@ def render_window_controls(view_key, data_max):
     st.caption(f"Display range: {vmin:.3f} to {vmax:.3f} Gy")
 
 
-def render_matplotlib_map(dose_map, title, vmin=None, vmax=None):
+def render_matplotlib_map(dose_map, title, vmin=None, vmax=None, show_contours=False, min_cluster=10):
     fig, ax = plt.subplots(figsize=(7, 5))
 
     if vmin is None:
@@ -149,6 +149,18 @@ def render_matplotlib_map(dose_map, title, vmin=None, vmax=None):
     ax.set_ylabel("Y")
     cbar = plt.colorbar(im, ax=ax)
     cbar.set_label("Dose (Gy)")
+
+    if show_contours:
+        for thr in (1, 2, 5, 10):
+            mask = dose_map >= float(thr)
+            if not np.any(mask):
+                continue
+            largest_mask = get_largest_cluster_mask(mask)
+            largest_size = int(np.count_nonzero(largest_mask))
+            if largest_size < int(min_cluster):
+                continue
+            ax.contour(largest_mask.astype(float), levels=[0.5], linewidths=1.2)
+
     fig.tight_layout()
     return fig
 
@@ -604,6 +616,42 @@ def make_clean_hover_figure(dose_map, title, vmin, vmax, inclusion_roi=None):
     return fig
 
 
+def make_contour_figure(dose_map, title, vmin, vmax, inclusion_roi=None, min_cluster=10):
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Heatmap(
+            z=dose_map,
+            colorscale="Jet",
+            zmin=vmin,
+            zmax=vmax,
+            colorbar=dict(title="Dose (Gy)"),
+            hoverinfo="skip",
+        )
+    )
+
+    if inclusion_roi is not None:
+        x1, y1, x2, y2 = inclusion_roi
+        fig.add_shape(
+            type="rect",
+            x0=x1, y0=y1, x1=x2, y1=y2,
+            line=dict(color="white", width=2),
+            fillcolor="rgba(0,0,0,0)"
+        )
+
+    add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=min_cluster)
+
+    fig.update_layout(
+        title=title,
+        margin=dict(l=10, r=10, t=40, b=10),
+        xaxis_title="X",
+        yaxis_title="Y",
+    )
+    fig.update_yaxes(autorange="reversed", scaleanchor="x", scaleratio=1)
+
+    return fig
+
+
 # =========================================================
 # Session state
 # =========================================================
@@ -919,6 +967,25 @@ if uploaded_files:
 
                 render_window_controls("roi_result_view", result_max)
 
+                if show_isocontours:
+                    st.subheader("Isocontour view (visual only)")
+
+                    contour_fig = make_contour_figure(
+                        display_map,
+                        "Cumulative dose with isocontours",
+                        result_vmin,
+                        result_vmax,
+                        inclusion_roi=inclusion_roi,
+                        min_cluster=min_cluster_pixels,
+                    )
+
+                    st.plotly_chart(
+                        contour_fig,
+                        width="stretch",
+                        config={"displaylogo": False},
+                        key="contour_chart",
+                    )
+
             with right:
                 st.metric("Number of sessions", len(processed_maps))
                 st.metric("ROI peak dose", f"{roi_stats['peak_dose']:.3f} Gy")
@@ -1000,6 +1067,22 @@ if uploaded_files:
 
                         render_window_controls(f"session_view_{i}", session_max)
 
+                        if show_isocontours:
+                            session_contour_fig = make_contour_figure(
+                                session_display,
+                                f"{name} | Isocontours",
+                                session_vmin,
+                                session_vmax,
+                                inclusion_roi=inclusion_roi,
+                                min_cluster=min_cluster_pixels,
+                            )
+                            st.plotly_chart(
+                                session_contour_fig,
+                                width="stretch",
+                                config={"displaylogo": False},
+                                key=f"session_contour_chart_{i}",
+                            )
+
             if show_histogram:
                 st.subheader("Dose histogram inside ROI")
                 nz = roi_stats["stats_map"][roi_stats["stats_map"] > 0]
@@ -1017,25 +1100,13 @@ if uploaded_files:
             if show_downloads:
                 st.subheader("Downloads")
 
-                export_fig = go.Figure()
-                export_fig.add_trace(
-                    go.Heatmap(
-                        z=display_map,
-                        colorscale="Jet",
-                        zmin=result_vmin,
-                        zmax=result_vmax,
-                        colorbar=dict(title="Dose (Gy)"),
-                        hoverinfo="skip",
-                    )
-                )
-                if show_isocontours:
-                    add_isocontours(export_fig, display_map, thresholds=(1, 2, 5, 10), min_cluster=min_cluster_pixels)
-
                 fig_cum = render_matplotlib_map(
                     display_map,
                     title=f"Cumulative reconstructed dose | ROI peak {roi_stats['peak_dose']:.3f} Gy",
                     vmin=result_vmin,
                     vmax=result_vmax,
+                    show_contours=show_isocontours,
+                    min_cluster=min_cluster_pixels,
                 )
                 cum_png = fig_to_png_bytes(fig_cum)
                 plt.close(fig_cum)
