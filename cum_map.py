@@ -23,9 +23,6 @@ st.warning(
 )
 
 
-# =========================================================
-# Helpers
-# =========================================================
 def fig_to_png_bytes(fig):
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=200, bbox_inches="tight")
@@ -207,8 +204,9 @@ def render_interactive_map(
                 x=gx,
                 y=gy,
                 mode="markers",
-                marker=dict(size=6, color="rgba(0,0,0,0)"),
-                hoverinfo="skip",
+                marker=dict(size=2, color="rgba(0,0,0,0)"),
+                hoverinfo="none",
+                hovertemplate=None,
                 showlegend=False,
                 selected=dict(marker=dict(opacity=0)),
                 unselected=dict(marker=dict(opacity=0)),
@@ -244,7 +242,8 @@ def render_interactive_map(
                 textposition="top center",
                 marker=dict(size=10, symbol="x", color="white"),
                 name="Peak",
-                hovertemplate="Peak X: %{x}<br>Peak Y: %{y}<extra></extra>",
+                hoverinfo="none",
+                hovertemplate=None,
                 showlegend=False,
             )
         )
@@ -255,6 +254,7 @@ def render_interactive_map(
         xaxis_title="X",
         yaxis_title="Y",
         dragmode="select",
+        hovermode="closest",
     )
     fig.update_yaxes(autorange="reversed", scaleanchor="x", scaleratio=1)
 
@@ -423,10 +423,10 @@ def get_largest_cluster_mask(mask, connectivity=8):
 
 def add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=10):
     colors = {
-        1: "#00FFFF",   # cyan
-        2: "#00FF66",   # green
-        5: "#FFA500",   # orange
-        10: "#FF2D2D",  # red
+        1: "#00FFFF",
+        2: "#00FF66",
+        5: "#FFA500",
+        10: "#FF2D2D",
     }
 
     for thr in thresholds:
@@ -607,9 +607,6 @@ def roi_from_selection(selection_state, width, height):
     return clamp_roi((x1, y1, x2, y2), width, height)
 
 
-# =========================================================
-# Session state
-# =========================================================
 if "reconstruction_signature" not in st.session_state:
     st.session_state.reconstruction_signature = None
 if "cumulative_dose" not in st.session_state:
@@ -622,9 +619,6 @@ if "inclusion_roi" not in st.session_state:
     st.session_state.inclusion_roi = None
 
 
-# =========================================================
-# Main UI
-# =========================================================
 uploaded_files = st.file_uploader(
     "Upload OpenREM PNG images",
     type=["png"],
