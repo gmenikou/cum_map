@@ -1062,7 +1062,8 @@ if uploaded_files:
                 cluster_rules=dynamic_cluster_rules,
                 default_min_cluster=fallback_min_cluster_pixels,
             )
-            display_map = masked_to_inclusion_roi(cumulative_dose, inclusion_roi)
+            display_map = cumulative_dose
+            roi_display_map = masked_to_inclusion_roi(cumulative_dose, inclusion_roi)
 
             left, right = st.columns([1.4, 1])
 
@@ -1099,7 +1100,7 @@ if uploaded_files:
                     st.subheader("Isocontour view (visual only)")
 
                     contour_fig = make_contour_figure(
-                        display_map,
+                        roi_display_map,
                         "Cumulative dose with isocontours",
                         result_vmin,
                         result_vmax,
@@ -1246,7 +1247,7 @@ if uploaded_files:
                 st.subheader("Downloads")
 
                 fig_cum = render_matplotlib_map(
-                    display_map,
+                    roi_display_map,
                     title=f"Cumulative reconstructed dose | ROI peak {roi_stats['peak_dose']:.3f} Gy",
                     vmin=result_vmin,
                     vmax=result_vmax,
