@@ -393,7 +393,7 @@ def add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=10):
                 x=segments_x,
                 y=segments_y,
                 mode="lines",
-                line=dict(color=colors.get(thr, "#FFFFFF"), width=2),
+                line=dict(color=colors.get(thr, "#FFFFFF"), width=4),
                 hoverinfo="none",
                 hovertemplate=None,
                 showlegend=False,
@@ -646,6 +646,7 @@ def make_contour_figure(dose_map, title, vmin, vmax, inclusion_roi=None, min_clu
             colorbar=dict(title="Dose (Gy)"),
             hoverinfo="skip",
         )
+    fig.update_traces(opacity=0.85, selector=dict(type='heatmap'))    
     )
 
     if inclusion_roi is not None:
