@@ -132,7 +132,7 @@ def render_window_controls(view_key, data_max):
     st.caption(f"Display range: {vmin:.3f} to {vmax:.3f} Gy")
 
 
-def render_matplotlib_map(dose_map, title, vmin=None, vmax=None, show_contours=False, min_cluster=10):
+def render_matplotlib_map(dose_map, title, vmin=None, vmax=None, show_contours=False, min_cluster=10, cluster_rules=None):
     fig, ax = plt.subplots(figsize=(7, 5))
 
     if vmin is None:
@@ -148,19 +148,10 @@ def render_matplotlib_map(dose_map, title, vmin=None, vmax=None, show_contours=F
     cbar.set_label("Dose (Gy)")
 
     if show_contours:
-        bands = [
-            (1.0, None),
-            (2.0, None),
-            (5.0, None),
-            (10.0, None),
-        ]
-        for low, high in bands:
-            if high is None:
-                mask = dose_map >= low
-            else:
-                mask = (dose_map >= low) & (dose_map < high)
-
-            cluster_masks = get_cluster_masks(mask, min_cluster=min_cluster, connectivity=8)
+        for thr in (1.0, 2.0, 5.0, 10.0):
+            mask = dose_map >= thr
+            thr_min_cluster = int(cluster_rules.get(thr, min_cluster)) if cluster_rules else int(min_cluster)
+            cluster_masks = get_cluster_masks(mask, min_cluster=thr_min_cluster, connectivity=8)
             for cluster_mask in cluster_masks:
                 ax.contour(cluster_mask.astype(float), levels=[0.5], linewidths=1.2)
 
@@ -343,50 +334,59 @@ def get_cluster_masks(mask, min_cluster=10, connectivity=8):
     return clusters
 
 
-def get_largest_cluster_mask(mask, connectivity=8):
-    h, w = mask.shape
-    visited = np.zeros_like(mask, dtype=bool)
-    largest_component = []
+def get_component_sizes(mask, connectivity=8):
+    clusters = get_cluster_masks(mask, min_cluster=1, connectivity=connectivity)
+    return [int(np.sum(c)) for c in clusters]
 
-    if connectivity == 8:
-        neighbors = [
-            (-1, -1), (-1, 0), (-1, 1),
-            (0, -1),            (0, 1),
-            (1, -1),  (1, 0),   (1, 1),
-        ]
+
+def estimate_dynamic_cluster_rules_from_cumulative(
+    cumulative_dose,
+    thresholds=(1.0, 2.0, 5.0, 10.0),
+    connectivity=8,
+    lower_portion_percentile=60,
+    nuisance_percentile=95,
+    floor_px=4,
+):
+    rules = {}
+
+    for thr in thresholds:
+        mask = cumulative_dose >= float(thr)
+        sizes = get_component_sizes(mask, connectivity=connectivity)
+
+        if not sizes:
+            rules[float(thr)] = int(floor_px)
+            continue
+
+        sizes = np.array(sorted(sizes), dtype=np.float32)
+
+        if len(sizes) == 1:
+            rules[float(thr)] = max(int(floor_px), int(np.ceil(sizes[0])))
+            continue
+
+        size_cut = np.percentile(sizes, lower_portion_percentile)
+        small_sizes = sizes[sizes <= size_cut]
+
+        if len(small_sizes) == 0:
+            small_sizes = sizes
+
+        thr_min_cluster = int(np.ceil(np.percentile(small_sizes, nuisance_percentile)))
+        rules[float(thr)] = max(int(floor_px), thr_min_cluster)
+
+    return rules
+
+
+def cluster_label(largest_cluster, min_cluster=10):
+    if largest_cluster < min_cluster:
+        return "No meaningful cluster"
+    elif largest_cluster < 20:
+        return "Small meaningful cluster"
+    elif largest_cluster < 50:
+        return "Moderate meaningful cluster"
     else:
-        neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-
-    for y in range(h):
-        for x in range(w):
-            if not mask[y, x] or visited[y, x]:
-                continue
-
-            stack = [(y, x)]
-            visited[y, x] = True
-            component = []
-
-            while stack:
-                cy, cx = stack.pop()
-                component.append((cy, cx))
-
-                for dy, dx in neighbors:
-                    ny, nx = cy + dy, cx + dx
-                    if 0 <= ny < h and 0 <= nx < w:
-                        if mask[ny, nx] and not visited[ny, nx]:
-                            visited[ny, nx] = True
-                            stack.append((ny, nx))
-
-            if len(component) > len(largest_component):
-                largest_component = component
-
-    out = np.zeros_like(mask, dtype=bool)
-    for y, x in largest_component:
-        out[y, x] = True
-    return out
+        return "Large meaningful cluster"
 
 
-def add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=10):
+def add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=10, cluster_rules=None):
     colors = {
         1: "#FF00FF",
         2: "#00FF66",
@@ -399,7 +399,8 @@ def add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=10):
         if not np.any(mask):
             continue
 
-        cluster_masks = get_cluster_masks(mask, min_cluster=min_cluster, connectivity=8)
+        thr_min_cluster = int(cluster_rules.get(float(thr), min_cluster)) if cluster_rules else int(min_cluster)
+        cluster_masks = get_cluster_masks(mask, min_cluster=thr_min_cluster, connectivity=8)
         if not cluster_masks:
             continue
 
@@ -447,18 +448,7 @@ def add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=10):
             )
 
 
-def cluster_label(largest_cluster, min_cluster=10):
-    if largest_cluster < min_cluster:
-        return "No meaningful cluster"
-    elif largest_cluster < 20:
-        return "Small meaningful cluster"
-    elif largest_cluster < 50:
-        return "Moderate meaningful cluster"
-    else:
-        return "Large meaningful cluster"
-
-
-def compute_stats(dose_map, roi=None, min_cluster=10):
+def compute_stats(dose_map, roi=None, cluster_rules=None, default_min_cluster=10):
     h, w = dose_map.shape
 
     if roi is None:
@@ -498,6 +488,11 @@ def compute_stats(dose_map, roi=None, min_cluster=10):
     cl5 = largest_connected_component_size(stats_map >= 5.0)
     cl10 = largest_connected_component_size(stats_map >= 10.0)
 
+    min1 = int(cluster_rules.get(1.0, default_min_cluster)) if cluster_rules else int(default_min_cluster)
+    min2 = int(cluster_rules.get(2.0, default_min_cluster)) if cluster_rules else int(default_min_cluster)
+    min5 = int(cluster_rules.get(5.0, default_min_cluster)) if cluster_rules else int(default_min_cluster)
+    min10 = int(cluster_rules.get(10.0, default_min_cluster)) if cluster_rules else int(default_min_cluster)
+
     return {
         "roi": roi,
         "peak_dose": peak_val,
@@ -519,19 +514,23 @@ def compute_stats(dose_map, roi=None, min_cluster=10):
         "cl2": cl2,
         "cl5": cl5,
         "cl10": cl10,
-        "flag1": cl1 >= min_cluster,
-        "flag2": cl2 >= min_cluster,
-        "flag5": cl5 >= min_cluster,
-        "flag10": cl10 >= min_cluster,
-        "label1": cluster_label(cl1, min_cluster=min_cluster),
-        "label2": cluster_label(cl2, min_cluster=min_cluster),
-        "label5": cluster_label(cl5, min_cluster=min_cluster),
-        "label10": cluster_label(cl10, min_cluster=min_cluster),
+        "min1": min1,
+        "min2": min2,
+        "min5": min5,
+        "min10": min10,
+        "flag1": cl1 >= min1,
+        "flag2": cl2 >= min2,
+        "flag5": cl5 >= min5,
+        "flag10": cl10 >= min10,
+        "label1": cluster_label(cl1, min_cluster=min1),
+        "label2": cluster_label(cl2, min_cluster=min2),
+        "label5": cluster_label(cl5, min_cluster=min5),
+        "label10": cluster_label(cl10, min_cluster=min10),
         "stats_map": stats_map,
     }
 
 
-def build_csv_bytes(session_rows, roi_stats, min_cluster):
+def build_csv_bytes(session_rows, roi_stats, cluster_rules):
     lines = []
     lines.append("file,displayed_max_gy,crop_box,reconstructed_peak_gy,nonzero_pixels")
     for row in session_rows:
@@ -540,23 +539,27 @@ def build_csv_bytes(session_rows, roi_stats, min_cluster):
         )
 
     lines.append("")
-    lines.append(f"cluster_rule,largest_connected_component_must_be_at_least,{min_cluster},pixels")
+    lines.append("adaptive_cluster_rule,derived_from,cumulative_map_small_component_distribution")
+    lines.append("dose_threshold_gy,min_connected_pixels")
+    for thr in [1.0, 2.0, 5.0, 10.0]:
+        lines.append(f"{thr},{int(cluster_rules.get(thr, 0))}")
+
     lines.append("")
     lines.append(
         "summary,roi,peak_dose_gy,peak_x,peak_y,mean_dose_gy,median_dose_gy,std_dose_gy,min_nonzero_dose_gy,p95_dose_gy,dose_sum,total_pixels,nonzero_pixels,"
-        "pixels_ge_1gy,largest_cluster_ge_1gy,meaningful_cluster_ge_1gy,label_ge_1gy,"
-        "pixels_ge_2gy,largest_cluster_ge_2gy,meaningful_cluster_ge_2gy,label_ge_2gy,"
-        "pixels_ge_5gy,largest_cluster_ge_5gy,meaningful_cluster_ge_5gy,label_ge_5gy,"
-        "pixels_ge_10gy,largest_cluster_ge_10gy,meaningful_cluster_ge_10gy,label_ge_10gy"
+        "pixels_ge_1gy,largest_cluster_ge_1gy,min_cluster_ge_1gy,meaningful_cluster_ge_1gy,label_ge_1gy,"
+        "pixels_ge_2gy,largest_cluster_ge_2gy,min_cluster_ge_2gy,meaningful_cluster_ge_2gy,label_ge_2gy,"
+        "pixels_ge_5gy,largest_cluster_ge_5gy,min_cluster_ge_5gy,meaningful_cluster_ge_5gy,label_ge_5gy,"
+        "pixels_ge_10gy,largest_cluster_ge_10gy,min_cluster_ge_10gy,meaningful_cluster_ge_10gy,label_ge_10gy"
     )
     lines.append(
         f"roi,{roi_stats['roi']},{roi_stats['peak_dose']},{roi_stats['peak_x']},{roi_stats['peak_y']},"
         f"{roi_stats['mean_dose']},{roi_stats['median_dose']},{roi_stats['std_dose']},{roi_stats['min_nonzero_dose']},"
         f"{roi_stats['p95_dose']},{roi_stats['dose_sum']},{roi_stats['total_pixels']},{roi_stats['nonzero_pixels']},"
-        f"{roi_stats['thr1']},{roi_stats['cl1']},{roi_stats['flag1']},{roi_stats['label1']},"
-        f"{roi_stats['thr2']},{roi_stats['cl2']},{roi_stats['flag2']},{roi_stats['label2']},"
-        f"{roi_stats['thr5']},{roi_stats['cl5']},{roi_stats['flag5']},{roi_stats['label5']},"
-        f"{roi_stats['thr10']},{roi_stats['cl10']},{roi_stats['flag10']},{roi_stats['label10']}"
+        f"{roi_stats['thr1']},{roi_stats['cl1']},{roi_stats['min1']},{roi_stats['flag1']},{roi_stats['label1']},"
+        f"{roi_stats['thr2']},{roi_stats['cl2']},{roi_stats['min2']},{roi_stats['flag2']},{roi_stats['label2']},"
+        f"{roi_stats['thr5']},{roi_stats['cl5']},{roi_stats['min5']},{roi_stats['flag5']},{roi_stats['label5']},"
+        f"{roi_stats['thr10']},{roi_stats['cl10']},{roi_stats['min10']},{roi_stats['flag10']},{roi_stats['label10']}"
     )
 
     return "\n".join(lines).encode("utf-8")
@@ -681,7 +684,7 @@ def make_clean_hover_figure(dose_map, title, vmin, vmax, inclusion_roi=None):
     return fig
 
 
-def make_contour_figure(dose_map, title, vmin, vmax, inclusion_roi=None, min_cluster=10):
+def make_contour_figure(dose_map, title, vmin, vmax, inclusion_roi=None, min_cluster=10, cluster_rules=None):
     fig = go.Figure()
 
     fig.add_trace(
@@ -706,7 +709,13 @@ def make_contour_figure(dose_map, title, vmin, vmax, inclusion_roi=None, min_clu
             fillcolor="rgba(0,0,0,0)"
         )
 
-    add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=min_cluster)
+    add_isocontours(
+        fig,
+        dose_map,
+        thresholds=(1, 2, 5, 10),
+        min_cluster=min_cluster,
+        cluster_rules=cluster_rules,
+    )
 
     legend_items = [
         ("≥ 1 Gy", "#FF00FF"),
@@ -771,6 +780,8 @@ if "processed_maps" not in st.session_state:
     st.session_state.processed_maps = None
 if "session_rows" not in st.session_state:
     st.session_state.session_rows = None
+if "dynamic_cluster_rules" not in st.session_state:
+    st.session_state.dynamic_cluster_rules = None
 if "inclusion_roi" not in st.session_state:
     st.session_state.inclusion_roi = None
 if "roi_edit_mode" not in st.session_state:
@@ -818,10 +829,26 @@ if uploaded_files:
             index=2,
         )
 
-        min_cluster_pixels = st.number_input(
-            "Minimum connected cluster for meaningful exceedance (pixels)",
+        fallback_min_cluster_pixels = st.number_input(
+            "Fallback minimum connected cluster (pixels)",
             min_value=1,
-            value=10,
+            value=4,
+            step=1,
+        )
+
+        adaptive_lower_portion_percentile = st.slider(
+            "Adaptive rule: lower portion of component sizes (%)",
+            min_value=20,
+            max_value=90,
+            value=60,
+            step=5,
+        )
+
+        adaptive_nuisance_percentile = st.slider(
+            "Adaptive rule: nuisance percentile (%)",
+            min_value=70,
+            max_value=99,
+            value=95,
             step=1,
         )
 
@@ -849,7 +876,9 @@ if uploaded_files:
     if "crop_mode" not in locals():
         crop_mode = "Use full image"
         size_mode = "Pad to largest common size"
-        min_cluster_pixels = 10
+        fallback_min_cluster_pixels = 4
+        adaptive_lower_portion_percentile = 60
+        adaptive_nuisance_percentile = 95
         show_isocontours = True
         show_session_previews = False
         show_histogram = False
@@ -867,7 +896,9 @@ if uploaded_files:
         "crop_mode": crop_mode,
         "size_mode": size_mode,
         "manual_vals": manual_vals,
-        "min_cluster_pixels": int(min_cluster_pixels),
+        "fallback_min_cluster_pixels": int(fallback_min_cluster_pixels),
+        "adaptive_lower_portion_percentile": int(adaptive_lower_portion_percentile),
+        "adaptive_nuisance_percentile": int(adaptive_nuisance_percentile),
     }
 
     needs_rebuild = (
@@ -935,9 +966,19 @@ if uploaded_files:
 
             cumulative_dose = np.sum([m[1] for m in processed_maps], axis=0)
 
+            dynamic_cluster_rules = estimate_dynamic_cluster_rules_from_cumulative(
+                cumulative_dose,
+                thresholds=(1.0, 2.0, 5.0, 10.0),
+                connectivity=8,
+                lower_portion_percentile=adaptive_lower_portion_percentile,
+                nuisance_percentile=adaptive_nuisance_percentile,
+                floor_px=fallback_min_cluster_pixels,
+            )
+
             st.session_state.cumulative_dose = cumulative_dose
             st.session_state.processed_maps = processed_maps
             st.session_state.session_rows = session_rows
+            st.session_state.dynamic_cluster_rules = dynamic_cluster_rules
             st.session_state.reconstruction_signature = current_signature
             st.session_state.inclusion_roi = None
             st.session_state.roi_edit_mode = True
@@ -949,6 +990,7 @@ if uploaded_files:
         cumulative_dose = st.session_state.cumulative_dose
         processed_maps = st.session_state.processed_maps
         session_rows = st.session_state.session_rows
+        dynamic_cluster_rules = st.session_state.dynamic_cluster_rules
 
         st.subheader("Inclusion ROI")
         map_h, map_w = cumulative_dose.shape
@@ -1038,7 +1080,12 @@ if uploaded_files:
             st.info("No ROI selected yet.")
         else:
             inclusion_roi = st.session_state.inclusion_roi
-            roi_stats = compute_stats(cumulative_dose, roi=inclusion_roi, min_cluster=min_cluster_pixels)
+            roi_stats = compute_stats(
+                cumulative_dose,
+                roi=inclusion_roi,
+                cluster_rules=dynamic_cluster_rules,
+                default_min_cluster=fallback_min_cluster_pixels,
+            )
             display_map = masked_to_inclusion_roi(cumulative_dose, inclusion_roi)
 
             left, right = st.columns([1.4, 1])
@@ -1081,7 +1128,8 @@ if uploaded_files:
                         result_vmin,
                         result_vmax,
                         inclusion_roi=inclusion_roi,
-                        min_cluster=min_cluster_pixels,
+                        min_cluster=fallback_min_cluster_pixels,
+                        cluster_rules=dynamic_cluster_rules,
                     )
 
                     st.plotly_chart(
@@ -1090,14 +1138,19 @@ if uploaded_files:
                         config={"displaylogo": False},
                         key="contour_chart",
                     )
-                    st.caption("Contour lines show all connected regions meeting each threshold and minimum cluster size.")
+                    st.caption("Contour lines show connected regions meeting each fixed dose threshold and its adaptive connected-pixel rule.")
 
             with right:
                 st.metric("Number of sessions", len(processed_maps))
                 st.metric("ROI peak dose", f"{roi_stats['peak_dose']:.3f} Gy")
                 st.metric("ROI peak location", f"({roi_stats['peak_x']}, {roi_stats['peak_y']})")
                 st.caption("Coordinates are cursor-style X,Y positions.")
-                st.caption(f"Meaningful cluster rule: largest connected component ≥ {int(min_cluster_pixels)} pixels")
+
+                st.write("Adaptive contour pixel thresholds")
+                st.write(f"≥ 1 Gy: {roi_stats['min1']} px")
+                st.write(f"≥ 2 Gy: {roi_stats['min2']} px")
+                st.write(f"≥ 5 Gy: {roi_stats['min5']} px")
+                st.write(f"≥ 10 Gy: {roi_stats['min10']} px")
 
                 st.write("Inclusion ROI statistics")
                 st.write(f"Mean dose: {roi_stats['mean_dose']:.3f} Gy")
@@ -1112,24 +1165,28 @@ if uploaded_files:
                 st.write(
                     f"≥ 1 Gy: {roi_stats['thr1']} pixels | "
                     f"largest cluster {roi_stats['cl1']} px | "
+                    f"min cluster {roi_stats['min1']} px | "
                     f"{roi_stats['label1']} | "
                     f"{'YES' if roi_stats['flag1'] else 'NO'}"
                 )
                 st.write(
                     f"≥ 2 Gy: {roi_stats['thr2']} pixels | "
                     f"largest cluster {roi_stats['cl2']} px | "
+                    f"min cluster {roi_stats['min2']} px | "
                     f"{roi_stats['label2']} | "
                     f"{'YES' if roi_stats['flag2'] else 'NO'}"
                 )
                 st.write(
                     f"≥ 5 Gy: {roi_stats['thr5']} pixels | "
                     f"largest cluster {roi_stats['cl5']} px | "
+                    f"min cluster {roi_stats['min5']} px | "
                     f"{roi_stats['label5']} | "
                     f"{'YES' if roi_stats['flag5'] else 'NO'}"
                 )
                 st.write(
                     f"≥ 10 Gy: {roi_stats['thr10']} pixels | "
                     f"largest cluster {roi_stats['cl10']} px | "
+                    f"min cluster {roi_stats['min10']} px | "
                     f"{roi_stats['label10']} | "
                     f"{'YES' if roi_stats['flag10'] else 'NO'}"
                 )
@@ -1143,7 +1200,12 @@ if uploaded_files:
                         st.caption(f"Crop box: {bbox}")
 
                         session_display = masked_to_inclusion_roi(dose_map, inclusion_roi)
-                        session_stats = compute_stats(dose_map, inclusion_roi, min_cluster=min_cluster_pixels)
+                        session_stats = compute_stats(
+                            dose_map,
+                            inclusion_roi,
+                            cluster_rules=dynamic_cluster_rules,
+                            default_min_cluster=fallback_min_cluster_pixels,
+                        )
 
                         session_max = max(float(np.max(dose_map)), 1.0)
                         session_vmin, session_vmax = get_window_state(f"session_view_{i}", session_max)
@@ -1180,7 +1242,8 @@ if uploaded_files:
                                 session_vmin,
                                 session_vmax,
                                 inclusion_roi=inclusion_roi,
-                                min_cluster=min_cluster_pixels,
+                                min_cluster=fallback_min_cluster_pixels,
+                                cluster_rules=dynamic_cluster_rules,
                             )
                             st.plotly_chart(
                                 session_contour_fig,
@@ -1212,12 +1275,13 @@ if uploaded_files:
                     vmin=result_vmin,
                     vmax=result_vmax,
                     show_contours=show_isocontours,
-                    min_cluster=min_cluster_pixels,
+                    min_cluster=fallback_min_cluster_pixels,
+                    cluster_rules=dynamic_cluster_rules,
                 )
                 cum_png = fig_to_png_bytes(fig_cum)
                 plt.close(fig_cum)
 
-                csv_bytes = build_csv_bytes(session_rows, roi_stats, int(min_cluster_pixels))
+                csv_bytes = build_csv_bytes(session_rows, roi_stats, dynamic_cluster_rules)
 
                 npy_buf = io.BytesIO()
                 np.save(npy_buf, cumulative_dose)
