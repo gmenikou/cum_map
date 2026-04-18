@@ -775,8 +775,6 @@ if "processed_maps" not in st.session_state:
     st.session_state.processed_maps = None
 if "session_rows" not in st.session_state:
     st.session_state.session_rows = None
-if "dynamic_cluster_rules" not in st.session_state:
-    st.session_state.dynamic_cluster_rules = None
 if "inclusion_roi" not in st.session_state:
     st.session_state.inclusion_roi = None
 if "roi_edit_mode" not in st.session_state:
@@ -950,19 +948,6 @@ if uploaded_files:
                 processed_maps.append((name, dose_proc, displayed_max, bbox))
 
             cumulative_dose = np.sum([m[1] for m in processed_maps], axis=0)
-
-            dynamic_cluster_rules = estimate_dynamic_cluster_rules_from_cumulative(
-                cumulative_dose,
-                thresholds=(1.0, 2.0, 5.0, 10.0),
-                connectivity=8,
-                lower_portion_percentile=adaptive_lower_portion_percentile,
-                floor_px=fallback_min_cluster_pixels,
-            )
-
-            st.session_state.cumulative_dose = cumulative_dose
-            st.session_state.processed_maps = processed_maps
-            st.session_state.session_rows = session_rows
-            st.session_state.dynamic_cluster_rules = dynamic_cluster_rules
             st.session_state.reconstruction_signature = current_signature
             st.session_state.inclusion_roi = None
             st.session_state.roi_edit_mode = True
@@ -974,7 +959,6 @@ if uploaded_files:
         cumulative_dose = st.session_state.cumulative_dose
         processed_maps = st.session_state.processed_maps
         session_rows = st.session_state.session_rows
-        dynamic_cluster_rules = st.session_state.dynamic_cluster_rules
 
         st.subheader("Inclusion ROI")
         map_h, map_w = cumulative_dose.shape
@@ -1064,6 +1048,14 @@ if uploaded_files:
             st.info("No ROI selected yet.")
         else:
             inclusion_roi = st.session_state.inclusion_roi
+            roi_map_for_rules = masked_to_inclusion_roi(cumulative_dose, inclusion_roi)
+            dynamic_cluster_rules = estimate_dynamic_cluster_rules_from_cumulative(
+                roi_map_for_rules,
+                thresholds=(1.0, 2.0, 5.0, 10.0),
+                connectivity=8,
+                lower_portion_percentile=adaptive_lower_portion_percentile,
+                floor_px=fallback_min_cluster_pixels,
+            )
             roi_stats = compute_stats(
                 cumulative_dose,
                 roi=inclusion_roi,
