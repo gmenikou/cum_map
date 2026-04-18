@@ -359,37 +359,46 @@ def add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=10):
             continue
 
         m = largest_mask.astype(np.uint8)
-        up = np.zeros_like(m)
-        down = np.zeros_like(m)
-        left = np.zeros_like(m)
-        right = np.zeros_like(m)
+        h, w = m.shape
 
-        up[1:, :] = m[:-1, :]
-        down[:-1, :] = m[1:, :]
-        left[:, 1:] = m[:, :-1]
-        right[:, :-1] = m[:, 1:]
+        segments_x = []
+        segments_y = []
 
-        boundary = (m == 1) & ((up == 0) | (down == 0) | (left == 0) | (right == 0))
-        ys, xs = np.where(boundary)
+        for y in range(h):
+            for x in range(w):
+                if m[y, x] != 1:
+                    continue
 
-        if xs.size == 0:
+                if y == 0 or m[y - 1, x] == 0:
+                    segments_x += [x - 0.5, x + 0.5, None]
+                    segments_y += [y - 0.5, y - 0.5, None]
+
+                if y == h - 1 or m[y + 1, x] == 0:
+                    segments_x += [x - 0.5, x + 0.5, None]
+                    segments_y += [y + 0.5, y + 0.5, None]
+
+                if x == 0 or m[y, x - 1] == 0:
+                    segments_x += [x - 0.5, x - 0.5, None]
+                    segments_y += [y - 0.5, y + 0.5, None]
+
+                if x == w - 1 or m[y, x + 1] == 0:
+                    segments_x += [x + 0.5, x + 0.5, None]
+                    segments_y += [y - 0.5, y + 0.5, None]
+
+        if not segments_x:
             continue
 
         fig.add_trace(
             go.Scatter(
-                x=xs,
-                y=ys,
-                mode="markers",
-                marker=dict(
-                    size=2,
-                    color=colors.get(thr, "#FFFFFF"),
-                ),
+                x=segments_x,
+                y=segments_y,
+                mode="lines",
+                line=dict(color=colors.get(thr, "#FFFFFF"), width=2),
                 hoverinfo="none",
                 hovertemplate=None,
                 showlegend=False,
             )
         )
-
 
 def cluster_label(largest_cluster, min_cluster=10):
     if largest_cluster < min_cluster:
