@@ -358,23 +358,32 @@ def add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=10):
         if largest_size < int(min_cluster):
             continue
 
-        z = largest_mask.astype(float)
+        m = largest_mask.astype(np.uint8)
+        up = np.zeros_like(m)
+        down = np.zeros_like(m)
+        left = np.zeros_like(m)
+        right = np.zeros_like(m)
+
+        up[1:, :] = m[:-1, :]
+        down[:-1, :] = m[1:, :]
+        left[:, 1:] = m[:, :-1]
+        right[:, :-1] = m[:, 1:]
+
+        boundary = (m == 1) & ((up == 0) | (down == 0) | (left == 0) | (right == 0))
+        ys, xs = np.where(boundary)
+
+        if xs.size == 0:
+            continue
 
         fig.add_trace(
-            go.Contour(
-                z=z,
-                contours=dict(
-                    start=0.5,
-                    end=0.5,
-                    size=1,
-                    coloring="none",
-                    showlabels=False,
-                ),
-                line=dict(
+            go.Scatter(
+                x=xs,
+                y=ys,
+                mode="markers",
+                marker=dict(
+                    size=2,
                     color=colors.get(thr, "#FFFFFF"),
-                    width=1.5,
                 ),
-                showscale=False,
                 hoverinfo="none",
                 hovertemplate=None,
                 showlegend=False,
