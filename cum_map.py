@@ -341,7 +341,7 @@ def get_largest_cluster_mask(mask, connectivity=8):
 
 def add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=10):
     colors = {
-        1: "#00FFFF",
+        1: "#FF00FF",
         2: "#00FF66",
         5: "#FFA500",
         10: "#FF2D2D",
