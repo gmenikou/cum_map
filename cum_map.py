@@ -23,6 +23,9 @@ st.warning(
 )
 
 
+# =========================================================
+# Helpers
+# =========================================================
 def fig_to_png_bytes(fig):
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=200, bbox_inches="tight")
@@ -192,6 +195,7 @@ def render_interactive_map(
             zmin=vmin,
             zmax=vmax,
             colorbar=dict(title="Dose (Gy)"),
+            hoverongaps=False,
             hovertemplate="X: %{x}<br>Y: %{y}<br>Dose: %{z:.3f} Gy<extra></extra>",
         )
     )
@@ -456,7 +460,8 @@ def add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=10):
                     width=1.5,
                 ),
                 showscale=False,
-                hoverinfo="skip",
+                hoverinfo="none",
+                hovertemplate=None,
                 name=f"{thr} Gy isocontour",
                 showlegend=False,
             )
@@ -607,6 +612,9 @@ def roi_from_selection(selection_state, width, height):
     return clamp_roi((x1, y1, x2, y2), width, height)
 
 
+# =========================================================
+# Session state
+# =========================================================
 if "reconstruction_signature" not in st.session_state:
     st.session_state.reconstruction_signature = None
 if "cumulative_dose" not in st.session_state:
@@ -619,6 +627,9 @@ if "inclusion_roi" not in st.session_state:
     st.session_state.inclusion_roi = None
 
 
+# =========================================================
+# Main UI
+# =========================================================
 uploaded_files = st.file_uploader(
     "Upload OpenREM PNG images",
     type=["png"],
