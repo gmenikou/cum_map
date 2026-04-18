@@ -344,8 +344,7 @@ def estimate_dynamic_cluster_rules_from_cumulative(
     thresholds=(1.0, 2.0, 5.0, 10.0),
     connectivity=8,
     lower_portion_percentile=60,
-    nuisance_percentile=95,
-    floor_px=4,
+    floor_px=10,
 ):
     rules = {}
 
@@ -357,20 +356,16 @@ def estimate_dynamic_cluster_rules_from_cumulative(
             rules[float(thr)] = int(floor_px)
             continue
 
-        sizes = np.array(sorted(sizes), dtype=np.float32)
+        unique_sizes = sorted(set(int(s) for s in sizes))
 
-        if len(sizes) == 1:
-            rules[float(thr)] = max(int(floor_px), int(np.ceil(sizes[0])))
-            continue
+        if len(unique_sizes) == 1:
+            adaptive_min_cluster = unique_sizes[0]
+        else:
+            k = max(1, int(np.ceil(len(unique_sizes) * lower_portion_percentile / 100.0)))
+            small_sizes = unique_sizes[:k]
+            adaptive_min_cluster = max(small_sizes)
 
-        size_cut = np.percentile(sizes, lower_portion_percentile)
-        small_sizes = sizes[sizes <= size_cut]
-
-        if len(small_sizes) == 0:
-            small_sizes = sizes
-
-        thr_min_cluster = int(np.ceil(np.percentile(small_sizes, nuisance_percentile)))
-        rules[float(thr)] = max(int(floor_px), thr_min_cluster)
+        rules[float(thr)] = max(int(floor_px), int(adaptive_min_cluster))
 
     return rules
 
@@ -844,14 +839,6 @@ if uploaded_files:
             step=5,
         )
 
-        adaptive_nuisance_percentile = st.slider(
-            "Adaptive rule: nuisance percentile (%)",
-            min_value=70,
-            max_value=99,
-            value=95,
-            step=1,
-        )
-
         show_isocontours = st.checkbox("Show thin color-coded isocontours", value=True)
         show_session_previews = st.checkbox("Show reconstructed session previews", value=False)
         show_histogram = st.checkbox("Show histogram for ROI", value=False)
@@ -878,7 +865,6 @@ if uploaded_files:
         size_mode = "Pad to largest common size"
         fallback_min_cluster_pixels = 4
         adaptive_lower_portion_percentile = 60
-        adaptive_nuisance_percentile = 95
         show_isocontours = True
         show_session_previews = False
         show_histogram = False
@@ -898,7 +884,6 @@ if uploaded_files:
         "manual_vals": manual_vals,
         "fallback_min_cluster_pixels": int(fallback_min_cluster_pixels),
         "adaptive_lower_portion_percentile": int(adaptive_lower_portion_percentile),
-        "adaptive_nuisance_percentile": int(adaptive_nuisance_percentile),
     }
 
     needs_rebuild = (
@@ -971,7 +956,6 @@ if uploaded_files:
                 thresholds=(1.0, 2.0, 5.0, 10.0),
                 connectivity=8,
                 lower_portion_percentile=adaptive_lower_portion_percentile,
-                nuisance_percentile=adaptive_nuisance_percentile,
                 floor_px=fallback_min_cluster_pixels,
             )
 
@@ -1146,7 +1130,7 @@ if uploaded_files:
                 st.metric("ROI peak location", f"({roi_stats['peak_x']}, {roi_stats['peak_y']})")
                 st.caption("Coordinates are cursor-style X,Y positions.")
 
-                st.write("Adaptive contour pixel thresholds")
+                st.write("Adaptive contour pixel thresholds (unique-size rule)")
                 st.write(f"≥ 1 Gy: {roi_stats['min1']} px")
                 st.write(f"≥ 2 Gy: {roi_stats['min2']} px")
                 st.write(f"≥ 5 Gy: {roi_stats['min5']} px")
