@@ -148,15 +148,21 @@ def render_matplotlib_map(dose_map, title, vmin=None, vmax=None, show_contours=F
     cbar.set_label("Dose (Gy)")
 
     if show_contours:
-        for thr in (1, 2, 5, 10):
-            mask = dose_map >= float(thr)
-            if not np.any(mask):
-                continue
-            largest_mask = get_largest_cluster_mask(mask)
-            largest_size = int(np.count_nonzero(largest_mask))
-            if largest_size < int(min_cluster):
-                continue
-            ax.contour(largest_mask.astype(float), levels=[0.5], linewidths=1.2)
+        bands = [
+            (1.0, None),
+            (2.0, None),
+            (5.0, None),
+            (10.0, None),
+        ]
+        for low, high in bands:
+            if high is None:
+                mask = dose_map >= low
+            else:
+                mask = (dose_map >= low) & (dose_map < high)
+
+            cluster_masks = get_cluster_masks(mask, min_cluster=min_cluster, connectivity=8)
+            for cluster_mask in cluster_masks:
+                ax.contour(cluster_mask.astype(float), levels=[0.5], linewidths=1.2)
 
     fig.tight_layout()
     return fig
@@ -294,6 +300,49 @@ def largest_connected_component_size(mask, connectivity=8):
     return int(largest)
 
 
+def get_cluster_masks(mask, min_cluster=10, connectivity=8):
+    h, w = mask.shape
+    visited = np.zeros_like(mask, dtype=bool)
+    clusters = []
+
+    if connectivity == 8:
+        neighbors = [
+            (-1, -1), (-1, 0), (-1, 1),
+            (0, -1),            (0, 1),
+            (1, -1),  (1, 0),   (1, 1),
+        ]
+    else:
+        neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    for y in range(h):
+        for x in range(w):
+            if not mask[y, x] or visited[y, x]:
+                continue
+
+            stack = [(y, x)]
+            visited[y, x] = True
+            component = []
+
+            while stack:
+                cy, cx = stack.pop()
+                component.append((cy, cx))
+
+                for dy, dx in neighbors:
+                    ny, nx = cy + dy, cx + dx
+                    if 0 <= ny < h and 0 <= nx < w:
+                        if mask[ny, nx] and not visited[ny, nx]:
+                            visited[ny, nx] = True
+                            stack.append((ny, nx))
+
+            if len(component) >= int(min_cluster):
+                comp_mask = np.zeros_like(mask, dtype=bool)
+                for cy, cx in component:
+                    comp_mask[cy, cx] = True
+                clusters.append(comp_mask)
+
+    return clusters
+
+
 def get_largest_cluster_mask(mask, connectivity=8):
     h, w = mask.shape
     visited = np.zeros_like(mask, dtype=bool)
@@ -350,52 +399,52 @@ def add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=10):
         if not np.any(mask):
             continue
 
-        largest_mask = get_largest_cluster_mask(mask)
-        largest_size = int(np.count_nonzero(largest_mask))
-        if largest_size < int(min_cluster):
+        cluster_masks = get_cluster_masks(mask, min_cluster=min_cluster, connectivity=8)
+        if not cluster_masks:
             continue
 
-        m = largest_mask.astype(np.uint8)
-        h, w = m.shape
+        for cluster_mask in cluster_masks:
+            m = cluster_mask.astype(np.uint8)
+            h, w = m.shape
 
-        segments_x = []
-        segments_y = []
+            segments_x = []
+            segments_y = []
 
-        for y in range(h):
-            for x in range(w):
-                if m[y, x] != 1:
-                    continue
+            for y in range(h):
+                for x in range(w):
+                    if m[y, x] != 1:
+                        continue
 
-                if y == 0 or m[y - 1, x] == 0:
-                    segments_x += [x - 0.5, x + 0.5, None]
-                    segments_y += [y - 0.5, y - 0.5, None]
+                    if y == 0 or m[y - 1, x] == 0:
+                        segments_x += [x - 0.5, x + 0.5, None]
+                        segments_y += [y - 0.5, y - 0.5, None]
 
-                if y == h - 1 or m[y + 1, x] == 0:
-                    segments_x += [x - 0.5, x + 0.5, None]
-                    segments_y += [y + 0.5, y + 0.5, None]
+                    if y == h - 1 or m[y + 1, x] == 0:
+                        segments_x += [x - 0.5, x + 0.5, None]
+                        segments_y += [y + 0.5, y + 0.5, None]
 
-                if x == 0 or m[y, x - 1] == 0:
-                    segments_x += [x - 0.5, x - 0.5, None]
-                    segments_y += [y - 0.5, y + 0.5, None]
+                    if x == 0 or m[y, x - 1] == 0:
+                        segments_x += [x - 0.5, x - 0.5, None]
+                        segments_y += [y - 0.5, y + 0.5, None]
 
-                if x == w - 1 or m[y, x + 1] == 0:
-                    segments_x += [x + 0.5, x + 0.5, None]
-                    segments_y += [y - 0.5, y + 0.5, None]
+                    if x == w - 1 or m[y, x + 1] == 0:
+                        segments_x += [x + 0.5, x + 0.5, None]
+                        segments_y += [y - 0.5, y + 0.5, None]
 
-        if not segments_x:
-            continue
+            if not segments_x:
+                continue
 
-        fig.add_trace(
-            go.Scatter(
-                x=segments_x,
-                y=segments_y,
-                mode="lines",
-                line=dict(color=colors.get(thr, "#FFFFFF"), width=5),
-                hoverinfo="none",
-                hovertemplate=None,
-                showlegend=False,
+            fig.add_trace(
+                go.Scatter(
+                    x=segments_x,
+                    y=segments_y,
+                    mode="lines",
+                    line=dict(color=colors.get(thr, "#FFFFFF"), width=5),
+                    hoverinfo="none",
+                    hovertemplate=None,
+                    showlegend=False,
+                )
             )
-        )
 
 
 def cluster_label(largest_cluster, min_cluster=10):
@@ -659,24 +708,40 @@ def make_contour_figure(dose_map, title, vmin, vmax, inclusion_roi=None, min_clu
 
     add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=min_cluster)
 
-    colors = {
-        1: "#FF00FF",
-        2: "#00FF66",
-        5: "#FFA500",
-        10: "#FF2D2D",
-    }
+    legend_items = [
+        ("≥ 1 Gy", "#FF00FF"),
+        ("≥ 2 Gy", "#00FF66"),
+        ("≥ 5 Gy", "#FFA500"),
+        ("≥ 10 Gy", "#FF2D2D"),
+    ]
 
-    for thr, col in colors.items():
+    for name, col in legend_items:
         fig.add_trace(
             go.Scatter(
                 x=[None],
                 y=[None],
                 mode="lines",
                 line=dict(color=col, width=4),
-                name=f"≥ {thr} Gy",
+                name=name,
                 showlegend=True,
             )
         )
+
+    if inclusion_roi is not None:
+        x1, y1, x2, y2 = inclusion_roi
+        pad_x = max(10, int(round((x2 - x1) * 0.08)))
+        pad_y = max(10, int(round((y2 - y1) * 0.08)))
+
+        x_min = max(0, x1 - pad_x)
+        x_max = min(dose_map.shape[1], x2 + pad_x)
+        y_min = max(0, y1 - pad_y)
+        y_max = min(dose_map.shape[0], y2 + pad_y)
+
+        fig.update_xaxes(range=[x_min, x_max])
+        fig.update_yaxes(range=[y_max, y_min])
+    else:
+        fig.update_yaxes(autorange="reversed", scaleanchor="x", scaleratio=1)
+
     fig.update_layout(
         title=title,
         margin=dict(l=10, r=180, t=40, b=10),
@@ -691,10 +756,9 @@ def make_contour_figure(dose_map, title, vmin, vmax, inclusion_roi=None, min_clu
             bgcolor="rgba(255,255,255,0.75)",
             bordercolor="rgba(0,0,0,0.15)",
             borderwidth=1,
-       ),
-   )
-    
-    fig.update_yaxes(autorange="reversed", scaleanchor="x", scaleratio=1)
+        ),
+    )
+    fig.update_yaxes(scaleanchor="x", scaleratio=1)
 
     return fig
 
@@ -1026,7 +1090,7 @@ if uploaded_files:
                         config={"displaylogo": False},
                         key="contour_chart",
                     )
-                    st.caption("Contour lines show connected regions exceeding dose thresholds (largest cluster only).")
+                    st.caption("Contour lines show all connected regions meeting each threshold and minimum cluster size.")
 
             with right:
                 st.metric("Number of sessions", len(processed_maps))
