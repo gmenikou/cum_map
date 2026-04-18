@@ -170,24 +170,7 @@ def build_selectable_grid(width, height, step=None):
     return xx.ravel(), yy.ravel(), step
 
 
-def render_interactive_map(
-    dose_map,
-    title,
-    vmin=None,
-    vmax=None,
-    inclusion_roi=None,
-    peak_xy=None,
-    selectable=True,
-):
-    if vmin is None:
-        vmin = 0.0
-    if vmax is None or vmax <= vmin:
-        vmax = max(float(np.max(dose_map)), vmin + 1e-6)
-
-    h, w = dose_map.shape
-
-    fig = go.Figure()
-
+def add_heatmap_trace(fig, dose_map, vmin, vmax):
     fig.add_trace(
         go.Heatmap(
             z=dose_map,
@@ -199,6 +182,28 @@ def render_interactive_map(
             hovertemplate="X: %{x}<br>Y: %{y}<br>Dose: %{z:.3f} Gy<extra></extra>",
         )
     )
+
+
+def render_interactive_map(
+    dose_map,
+    title,
+    vmin=None,
+    vmax=None,
+    inclusion_roi=None,
+    peak_xy=None,
+    selectable=False,
+    show_roi=True,
+    show_peak=True,
+):
+    if vmin is None:
+        vmin = 0.0
+    if vmax is None or vmax <= vmin:
+        vmax = max(float(np.max(dose_map)), vmin + 1e-6)
+
+    h, w = dose_map.shape
+
+    fig = go.Figure()
+    add_heatmap_trace(fig, dose_map, vmin, vmax)
 
     selection_step = None
     if selectable:
@@ -217,7 +222,7 @@ def render_interactive_map(
             )
         )
 
-    if inclusion_roi is not None:
+    if show_roi and inclusion_roi is not None:
         x1, y1, x2, y2 = inclusion_roi
         fig.add_shape(
             type="rect",
@@ -236,7 +241,7 @@ def render_interactive_map(
             bgcolor="rgba(0,0,0,0.45)"
         )
 
-    if peak_xy is not None:
+    if show_peak and peak_xy is not None:
         fig.add_trace(
             go.Scatter(
                 x=[peak_xy[0]],
@@ -245,7 +250,6 @@ def render_interactive_map(
                 text=["Peak"],
                 textposition="top center",
                 marker=dict(size=10, symbol="x", color="white"),
-                name="Peak",
                 hoverinfo="none",
                 hovertemplate=None,
                 showlegend=False,
@@ -257,7 +261,7 @@ def render_interactive_map(
         margin=dict(l=10, r=10, t=40, b=10),
         xaxis_title="X",
         yaxis_title="Y",
-        dragmode="select",
+        dragmode="select" if selectable else False,
         hovermode="closest",
     )
     fig.update_yaxes(autorange="reversed", scaleanchor="x", scaleratio=1)
@@ -462,7 +466,6 @@ def add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=10):
                 showscale=False,
                 hoverinfo="none",
                 hovertemplate=None,
-                name=f"{thr} Gy isocontour",
                 showlegend=False,
             )
         )
@@ -625,6 +628,8 @@ if "session_rows" not in st.session_state:
     st.session_state.session_rows = None
 if "inclusion_roi" not in st.session_state:
     st.session_state.inclusion_roi = None
+if "roi_edit_mode" not in st.session_state:
+    st.session_state.roi_edit_mode = True
 
 
 # =========================================================
@@ -793,6 +798,7 @@ if uploaded_files:
             st.session_state.session_rows = session_rows
             st.session_state.reconstruction_signature = current_signature
             st.session_state.inclusion_roi = None
+            st.session_state.roi_edit_mode = True
 
         except Exception as e:
             st.error(f"Error: {e}")
@@ -804,8 +810,7 @@ if uploaded_files:
 
         st.subheader("Inclusion ROI")
         st.caption(
-            "Use box select on the cumulative map. The ROI stats and previews appear after a selection. "
-            "Selection uses a lightweight invisible grid to reduce stall time."
+            "Draw ROI in edit mode. After selection, the app switches to hover view so pixel dose values remain visible."
         )
 
         map_h, map_w = cumulative_dose.shape
@@ -818,52 +823,88 @@ if uploaded_files:
         selector_max = max(float(np.max(cumulative_dose)), 1.0)
         selector_vmin, selector_vmax = get_window_state("selector_view", selector_max)
 
-        selector_fig, grid_step = render_interactive_map(
-            cumulative_dose,
-            title="Draw inclusion ROI with box select",
-            vmin=selector_vmin,
-            vmax=selector_vmax,
-            inclusion_roi=st.session_state.inclusion_roi,
-            peak_xy=current_peak,
-            selectable=True,
-        )
-        if show_isocontours:
-            add_isocontours(selector_fig, cumulative_dose, thresholds=(1, 2, 5, 10), min_cluster=min_cluster_pixels)
-
-        selection_event = st.plotly_chart(
-            selector_fig,
-            width="stretch",
-            on_select="rerun",
-            selection_mode=("box",),
-            config={
-                "modeBarButtonsToRemove": [
-                    "lasso2d",
-                    "zoom2d",
-                    "pan2d",
-                    "autoScale2d",
-                ],
-                "displaylogo": False,
-            },
-            key="roi_selector_chart",
-        )
-
-        render_window_controls("selector_view", selector_max)
-
-        new_roi = roi_from_selection(selection_event, map_w, map_h)
-        if new_roi is not None:
-            st.session_state.inclusion_roi = new_roi
-
-        controls = st.columns([1, 1, 2])
+        controls = st.columns([1, 1, 1, 2])
         with controls[0]:
             if st.button("Clear inclusion ROI", width="stretch"):
                 st.session_state.inclusion_roi = None
+                st.session_state.roi_edit_mode = True
                 st.rerun()
         with controls[1]:
             if st.button("Use full map as ROI", width="stretch"):
                 st.session_state.inclusion_roi = (0, 0, map_w, map_h)
+                st.session_state.roi_edit_mode = False
+                st.rerun()
+        with controls[2]:
+            if st.button("Redraw ROI", width="stretch"):
+                st.session_state.roi_edit_mode = True
                 st.rerun()
 
-        st.caption(f"Selection grid step: {grid_step} px")
+        if st.session_state.roi_edit_mode:
+            selector_fig, grid_step = render_interactive_map(
+                cumulative_dose,
+                title="ROI edit mode: draw inclusion ROI with box select",
+                vmin=selector_vmin,
+                vmax=selector_vmax,
+                inclusion_roi=None,
+                peak_xy=None,
+                selectable=True,
+                show_roi=False,
+                show_peak=False,
+            )
+
+            selection_event = st.plotly_chart(
+                selector_fig,
+                width="stretch",
+                on_select="rerun",
+                selection_mode=("box",),
+                config={
+                    "modeBarButtonsToRemove": [
+                        "lasso2d",
+                        "zoom2d",
+                        "pan2d",
+                        "autoScale2d",
+                    ],
+                    "displaylogo": False,
+                },
+                key="roi_selector_chart",
+            )
+
+            render_window_controls("selector_view", selector_max)
+            st.caption(f"Selection grid step: {grid_step} px")
+
+            new_roi = roi_from_selection(selection_event, map_w, map_h)
+            if new_roi is not None:
+                st.session_state.inclusion_roi = new_roi
+                st.session_state.roi_edit_mode = False
+                st.rerun()
+
+            if st.session_state.inclusion_roi is None:
+                st.info("No ROI selected yet. Draw a rectangle on the map with box select, or use the full-map button.")
+            else:
+                st.info("ROI exists. Click Redraw ROI to replace it, or wait for hover view.")
+        else:
+            preview_fig, _ = render_interactive_map(
+                cumulative_dose,
+                title="Hover view: cumulative map with ROI",
+                vmin=selector_vmin,
+                vmax=selector_vmax,
+                inclusion_roi=st.session_state.inclusion_roi,
+                peak_xy=current_peak,
+                selectable=False,
+                show_roi=True,
+                show_peak=True,
+            )
+            if show_isocontours:
+                add_isocontours(preview_fig, cumulative_dose, thresholds=(1, 2, 5, 10), min_cluster=min_cluster_pixels)
+
+            st.plotly_chart(
+                preview_fig,
+                width="stretch",
+                config={"displaylogo": False},
+                key="roi_preview_chart",
+            )
+
+            render_window_controls("selector_view", selector_max)
 
         if st.session_state.inclusion_roi is None:
             st.info("No ROI selected yet. Draw a rectangle on the map with box select, or use the full-map button.")
