@@ -23,9 +23,6 @@ st.warning(
 )
 
 
-# =========================================================
-# Helpers
-# =========================================================
 def fig_to_png_bytes(fig):
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=200, bbox_inches="tight")
@@ -76,8 +73,6 @@ def get_window_state(view_key, data_max):
 
     auto_window = st.session_state[auto_key]
     if auto_window:
-        level = data_max / 2.0
-        window = data_max
         vmin, vmax = 0.0, data_max
     else:
         level = float(np.clip(st.session_state[level_key], 0.0, data_max))
@@ -168,105 +163,6 @@ def build_selectable_grid(width, height, step=None):
     ys = np.arange(0, height, step, dtype=int)
     xx, yy = np.meshgrid(xs, ys)
     return xx.ravel(), yy.ravel(), step
-
-
-def add_heatmap_trace(fig, dose_map, vmin, vmax):
-    fig.add_trace(
-        go.Heatmap(
-            z=dose_map,
-            colorscale="Jet",
-            zmin=vmin,
-            zmax=vmax,
-            colorbar=dict(title="Dose (Gy)"),
-            hoverongaps=False,
-            hovertemplate="X: %{x}<br>Y: %{y}<br>Dose: %{z:.3f} Gy<extra></extra>",
-        )
-    )
-
-
-def render_interactive_map(
-    dose_map,
-    title,
-    vmin=None,
-    vmax=None,
-    inclusion_roi=None,
-    peak_xy=None,
-    selectable=False,
-    show_roi=True,
-    show_peak=True,
-):
-    if vmin is None:
-        vmin = 0.0
-    if vmax is None or vmax <= vmin:
-        vmax = max(float(np.max(dose_map)), vmin + 1e-6)
-
-    h, w = dose_map.shape
-
-    fig = go.Figure()
-    add_heatmap_trace(fig, dose_map, vmin, vmax)
-
-    selection_step = None
-    if selectable:
-        gx, gy, selection_step = build_selectable_grid(w, h)
-        fig.add_trace(
-            go.Scatter(
-                x=gx,
-                y=gy,
-                mode="markers",
-                marker=dict(size=2, color="rgba(0,0,0,0)"),
-                hoverinfo="none",
-                hovertemplate=None,
-                showlegend=False,
-                selected=dict(marker=dict(opacity=0)),
-                unselected=dict(marker=dict(opacity=0)),
-            )
-        )
-
-    if show_roi and inclusion_roi is not None:
-        x1, y1, x2, y2 = inclusion_roi
-        fig.add_shape(
-            type="rect",
-            x0=x1, y0=y1, x1=x2, y1=y2,
-            line=dict(color="white", width=2),
-            fillcolor="rgba(0,0,0,0)"
-        )
-        fig.add_annotation(
-            x=x1,
-            y=y1,
-            text=f"ROI {x2-x1}×{y2-y1} px",
-            showarrow=False,
-            xanchor="left",
-            yanchor="bottom",
-            font=dict(color="white"),
-            bgcolor="rgba(0,0,0,0.45)"
-        )
-
-    if show_peak and peak_xy is not None:
-        fig.add_trace(
-            go.Scatter(
-                x=[peak_xy[0]],
-                y=[peak_xy[1]],
-                mode="markers+text",
-                text=["Peak"],
-                textposition="top center",
-                marker=dict(size=10, symbol="x", color="white"),
-                hoverinfo="none",
-                hovertemplate=None,
-                showlegend=False,
-            )
-        )
-
-    fig.update_layout(
-        title=title,
-        margin=dict(l=10, r=10, t=40, b=10),
-        xaxis_title="X",
-        yaxis_title="Y",
-        dragmode="select" if selectable else False,
-        hovermode="closest",
-    )
-    fig.update_yaxes(autorange="reversed", scaleanchor="x", scaleratio=1)
-
-    return fig, selection_step
 
 
 def center_crop(arr, target_h, target_w):
@@ -615,9 +511,113 @@ def roi_from_selection(selection_state, width, height):
     return clamp_roi((x1, y1, x2, y2), width, height)
 
 
-# =========================================================
-# Session state
-# =========================================================
+def make_edit_figure(dose_map, title, vmin, vmax):
+    h, w = dose_map.shape
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Heatmap(
+            z=dose_map,
+            colorscale="Jet",
+            zmin=vmin,
+            zmax=vmax,
+            colorbar=dict(title="Dose (Gy)"),
+            hoverongaps=False,
+            hovertemplate="X: %{x}<br>Y: %{y}<br>Dose: %{z:.3f} Gy<extra></extra>",
+        )
+    )
+
+    gx, gy, step = build_selectable_grid(w, h)
+    fig.add_trace(
+        go.Scatter(
+            x=gx,
+            y=gy,
+            mode="markers",
+            marker=dict(size=2, color="rgba(0,0,0,0)"),
+            hoverinfo="none",
+            hovertemplate=None,
+            showlegend=False,
+            selected=dict(marker=dict(opacity=0)),
+            unselected=dict(marker=dict(opacity=0)),
+        )
+    )
+
+    fig.update_layout(
+        title=title,
+        margin=dict(l=10, r=10, t=40, b=10),
+        xaxis_title="X",
+        yaxis_title="Y",
+        dragmode="select",
+        hovermode="closest",
+    )
+    fig.update_yaxes(autorange="reversed", scaleanchor="x", scaleratio=1)
+    return fig, step
+
+
+def make_hover_figure(dose_map, title, vmin, vmax, inclusion_roi=None, peak_xy=None, show_isocontours=False, min_cluster=10):
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Heatmap(
+            z=dose_map,
+            colorscale="Jet",
+            zmin=vmin,
+            zmax=vmax,
+            colorbar=dict(title="Dose (Gy)"),
+            hoverongaps=False,
+            hovertemplate="X: %{x}<br>Y: %{y}<br>Dose: %{z:.3f} Gy<extra></extra>",
+        )
+    )
+
+    if show_isocontours:
+        add_isocontours(fig, dose_map, thresholds=(1, 2, 5, 10), min_cluster=min_cluster)
+
+    if inclusion_roi is not None:
+        x1, y1, x2, y2 = inclusion_roi
+        fig.add_shape(
+            type="rect",
+            x0=x1, y0=y1, x1=x2, y1=y2,
+            line=dict(color="white", width=2),
+            fillcolor="rgba(0,0,0,0)"
+        )
+        fig.add_annotation(
+            x=x1,
+            y=y1,
+            text=f"ROI {x2-x1}×{y2-y1} px",
+            showarrow=False,
+            xanchor="left",
+            yanchor="bottom",
+            font=dict(color="white"),
+            bgcolor="rgba(0,0,0,0.45)"
+        )
+
+    if peak_xy is not None:
+        fig.add_trace(
+            go.Scatter(
+                x=[peak_xy[0]],
+                y=[peak_xy[1]],
+                mode="markers+text",
+                text=["Peak"],
+                textposition="top center",
+                marker=dict(size=10, symbol="x", color="white"),
+                hoverinfo="none",
+                hovertemplate=None,
+                showlegend=False,
+            )
+        )
+
+    fig.update_layout(
+        title=title,
+        margin=dict(l=10, r=10, t=40, b=10),
+        xaxis_title="X",
+        yaxis_title="Y",
+        dragmode="pan",
+        hovermode="closest",
+    )
+    fig.update_yaxes(autorange="reversed", scaleanchor="x", scaleratio=1)
+    return fig
+
+
 if "reconstruction_signature" not in st.session_state:
     st.session_state.reconstruction_signature = None
 if "cumulative_dose" not in st.session_state:
@@ -632,9 +632,6 @@ if "roi_edit_mode" not in st.session_state:
     st.session_state.roi_edit_mode = True
 
 
-# =========================================================
-# Main UI
-# =========================================================
 uploaded_files = st.file_uploader(
     "Upload OpenREM PNG images",
     type=["png"],
@@ -809,19 +806,7 @@ if uploaded_files:
         session_rows = st.session_state.session_rows
 
         st.subheader("Inclusion ROI")
-        st.caption(
-            "Draw ROI in edit mode. After selection, the app switches to hover view so pixel dose values remain visible."
-        )
-
         map_h, map_w = cumulative_dose.shape
-
-        current_peak = None
-        if st.session_state.inclusion_roi is not None:
-            tmp_stats = compute_stats(cumulative_dose, st.session_state.inclusion_roi, min_cluster=min_cluster_pixels)
-            current_peak = (tmp_stats["peak_x"], tmp_stats["peak_y"])
-
-        selector_max = max(float(np.max(cumulative_dose)), 1.0)
-        selector_vmin, selector_vmax = get_window_state("selector_view", selector_max)
 
         controls = st.columns([1, 1, 1, 2])
         with controls[0]:
@@ -839,21 +824,19 @@ if uploaded_files:
                 st.session_state.roi_edit_mode = True
                 st.rerun()
 
+        selector_max = max(float(np.max(cumulative_dose)), 1.0)
+        selector_vmin, selector_vmax = get_window_state("selector_view", selector_max)
+
         if st.session_state.roi_edit_mode:
-            selector_fig, grid_step = render_interactive_map(
+            edit_fig, grid_step = make_edit_figure(
                 cumulative_dose,
-                title="ROI edit mode: draw inclusion ROI with box select",
-                vmin=selector_vmin,
-                vmax=selector_vmax,
-                inclusion_roi=None,
-                peak_xy=None,
-                selectable=True,
-                show_roi=False,
-                show_peak=False,
+                "ROI edit mode: draw box selection",
+                selector_vmin,
+                selector_vmax,
             )
 
             selection_event = st.plotly_chart(
-                selector_fig,
+                edit_fig,
                 width="stretch",
                 on_select="rerun",
                 selection_mode=("box",),
@@ -866,7 +849,7 @@ if uploaded_files:
                     ],
                     "displaylogo": False,
                 },
-                key="roi_selector_chart",
+                key="edit_chart_unique",
             )
 
             render_window_controls("selector_view", selector_max)
@@ -879,35 +862,41 @@ if uploaded_files:
                 st.rerun()
 
             if st.session_state.inclusion_roi is None:
-                st.info("No ROI selected yet. Draw a rectangle on the map with box select, or use the full-map button.")
-            else:
-                st.info("ROI exists. Click Redraw ROI to replace it, or wait for hover view.")
+                st.info("Draw a rectangle on the map.")
         else:
-            preview_fig, _ = render_interactive_map(
+            current_peak = None
+            if st.session_state.inclusion_roi is not None:
+                tmp_stats = compute_stats(cumulative_dose, st.session_state.inclusion_roi, min_cluster=min_cluster_pixels)
+                current_peak = (tmp_stats["peak_x"], tmp_stats["peak_y"])
+
+            hover_fig = make_hover_figure(
                 cumulative_dose,
-                title="Hover view: cumulative map with ROI",
-                vmin=selector_vmin,
-                vmax=selector_vmax,
+                "Hover view: cumulative map with ROI",
+                selector_vmin,
+                selector_vmax,
                 inclusion_roi=st.session_state.inclusion_roi,
                 peak_xy=current_peak,
-                selectable=False,
-                show_roi=True,
-                show_peak=True,
+                show_isocontours=show_isocontours,
+                min_cluster=min_cluster_pixels,
             )
-            if show_isocontours:
-                add_isocontours(preview_fig, cumulative_dose, thresholds=(1, 2, 5, 10), min_cluster=min_cluster_pixels)
 
             st.plotly_chart(
-                preview_fig,
+                hover_fig,
                 width="stretch",
-                config={"displaylogo": False},
-                key="roi_preview_chart",
+                config={
+                    "modeBarButtonsToRemove": [
+                        "select2d",
+                        "lasso2d",
+                    ],
+                    "displaylogo": False,
+                },
+                key="hover_chart_unique",
             )
 
             render_window_controls("selector_view", selector_max)
 
         if st.session_state.inclusion_roi is None:
-            st.info("No ROI selected yet. Draw a rectangle on the map with box select, or use the full-map button.")
+            st.info("No ROI selected yet.")
         else:
             inclusion_roi = st.session_state.inclusion_roi
             roi_stats = compute_stats(cumulative_dose, roi=inclusion_roi, min_cluster=min_cluster_pixels)
@@ -919,22 +908,27 @@ if uploaded_files:
                 result_max = max(float(np.max(cumulative_dose)), 1.0)
                 result_vmin, result_vmax = get_window_state("roi_result_view", result_max)
 
-                result_fig, _ = render_interactive_map(
+                result_fig = make_hover_figure(
                     display_map,
-                    title=f"Cumulative reconstructed dose | ROI peak {roi_stats['peak_dose']:.3f} Gy",
-                    vmin=result_vmin,
-                    vmax=result_vmax,
+                    f"Cumulative reconstructed dose | ROI peak {roi_stats['peak_dose']:.3f} Gy",
+                    result_vmin,
+                    result_vmax,
                     inclusion_roi=inclusion_roi,
                     peak_xy=(roi_stats["peak_x"], roi_stats["peak_y"]),
-                    selectable=False,
+                    show_isocontours=show_isocontours,
+                    min_cluster=min_cluster_pixels,
                 )
-                if show_isocontours:
-                    add_isocontours(result_fig, display_map, thresholds=(1, 2, 5, 10), min_cluster=min_cluster_pixels)
 
                 st.plotly_chart(
                     result_fig,
                     width="stretch",
-                    config={"displaylogo": False},
+                    config={
+                        "modeBarButtonsToRemove": [
+                            "select2d",
+                            "lasso2d",
+                        ],
+                        "displaylogo": False,
+                    },
                     key="roi_result_chart",
                 )
 
@@ -996,22 +990,27 @@ if uploaded_files:
                         session_max = max(float(np.max(dose_map)), 1.0)
                         session_vmin, session_vmax = get_window_state(f"session_view_{i}", session_max)
 
-                        session_fig, _ = render_interactive_map(
+                        session_fig = make_hover_figure(
                             session_display,
-                            title=f"{name} | ROI peak {session_stats['peak_dose']:.3f} Gy",
-                            vmin=session_vmin,
-                            vmax=session_vmax,
+                            f"{name} | ROI peak {session_stats['peak_dose']:.3f} Gy",
+                            session_vmin,
+                            session_vmax,
                             inclusion_roi=inclusion_roi,
                             peak_xy=(session_stats["peak_x"], session_stats["peak_y"]),
-                            selectable=False,
+                            show_isocontours=show_isocontours,
+                            min_cluster=min_cluster_pixels,
                         )
-                        if show_isocontours:
-                            add_isocontours(session_fig, session_display, thresholds=(1, 2, 5, 10), min_cluster=min_cluster_pixels)
 
                         st.plotly_chart(
                             session_fig,
                             width="stretch",
-                            config={"displaylogo": False},
+                            config={
+                                "modeBarButtonsToRemove": [
+                                    "select2d",
+                                    "lasso2d",
+                                ],
+                                "displaylogo": False,
+                            },
                             key=f"session_chart_{i}",
                         )
 
