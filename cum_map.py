@@ -646,8 +646,9 @@ def make_contour_figure(dose_map, title, vmin, vmax, inclusion_roi=None, min_clu
             colorbar=dict(title="Dose (Gy)"),
             hoverinfo="skip",
         )
-    fig.update_traces(opacity=0.85, selector=dict(type='heatmap'))    
     )
+
+    fig.update_traces(opacity=0.85, selector=dict(type="heatmap"))
 
     if inclusion_roi is not None:
         x1, y1, x2, y2 = inclusion_roi
